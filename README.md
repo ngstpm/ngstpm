@@ -3,6 +3,17 @@
 The Transfer Path Method (Cockburn–Solano) for HDG on unfitted level-set
 domains, as an NGSolve add-on.
 
+## Quick install
+
+```
+git clone https://github.com/ngstpm/ngstpm.git
+cd ngstpm
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e ".[test]"
+pytest
+```
+
 ## Install
 
 `ngstpm` has a small C++ part that is compiled on your machine against the
@@ -18,7 +29,7 @@ NGSolve is pinned to version 6.2.2606, so install into a fresh virtual
 environment and not next to another NGSolve (conda, system or older pip
 install).
 
-From the folder that contains this README:
+From the cloned `ngstpm` folder:
 
 ```
 python3 -m venv .venv
