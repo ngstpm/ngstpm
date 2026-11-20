@@ -15,6 +15,7 @@ classifiers = [
 
 [project.optional-dependencies]
 test = ["pytest"]
+examples = ["matplotlib"]
 
 [tool.scikit-build]
 wheel.packages = ["ngstpm"]

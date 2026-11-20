@@ -10,7 +10,7 @@ git clone https://github.com/ngstpm/ngstpm.git
 cd ngstpm
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[test]"
+pip install -e ".[test,examples]"
 pytest
 ```
 
@@ -34,12 +34,13 @@ From the cloned `ngstpm` folder:
 ```
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[test]"
+pip install -e ".[test,examples]"
 ```
 
 The last line downloads NGSolve, compiles the C++ module (about half a
-minute) and installs `ngstpm` together with pytest. Check the installation
-with the tests (about a minute; expect `174 passed, 10 skipped`):
+minute) and installs `ngstpm` together with pytest and matplotlib (for the
+drawing example). Check the installation with the tests (about a minute;
+expect `174 passed, 10 skipped`):
 
 ```
 pytest
