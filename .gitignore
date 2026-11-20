@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Build artefacts (scikit-build-core, CMake, cibuildwheel)
+build/
+dist/
+wheelhouse/
+_skbuild/
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.so
+*.dylib
+*.pyd
+*.dll
+
+# Output of examples (NGSolve/VTK, plots, saved data)
+*.vtu
+*.vtk
+*.pvd
+*.png
+*.pdf
+*.npz
+*.mat
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local assistant settings and private notes
+.claude/
+TODO.md

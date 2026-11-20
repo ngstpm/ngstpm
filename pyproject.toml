@@ -1,0 +1,46 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "ngsolve==6.2.2606"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "ngstpm"
+version = "0.1.0"
+description = "Transfer Path Method (Cockburn-Solano) for HDG on unfitted level-set domains in NGSolve"
+requires-python = ">=3.10"
+authors = [{ name = "Jaime Manriquez", email = "contact@manriquezjai.me" }]
+dependencies = ["ngsolve==6.2.2606", "numpy"]
+classifiers = [
+  "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.scikit-build]
+wheel.packages = ["ngstpm"]
+cmake.build-type = "Release"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# Prebuilt wheels (GitHub Actions, .github/workflows/wheels.yml). The compiled
+# module links against the libraries of the ngsolve wheel, so the repair step
+# must NOT bundle them (a second copy of NGSolve in the process breaks it).
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+skip = "*-musllinux_* *_i686 *-win32"
+test-requires = ["pytest"]
+test-command = "pytest {project}/tests -q"
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]
+manylinux-x86_64-image = "manylinux_2_28"
+repair-wheel-command = "auditwheel repair --exclude 'libng*.so' -w {dest_dir} {wheel}"
+
+[tool.cibuildwheel.macos]
+archs = ["arm64", "x86_64"]
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+repair-wheel-command = ""
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
