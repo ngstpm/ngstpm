@@ -95,3 +95,18 @@ def test_neumann_quadratic_reproduced_exactly():
     (qh, uh, _), inner = solve_neumann(mesh, 2, CF(-2.0), g(x, y), gN, phi)
     err = sqrt(Integrate((uh - g(x, y)) ** 2 * dx(definedonelements=inner), mesh))
     assert err < 1e-11
+
+
+@pytest.mark.parametrize("method", ["HDG", "HDG-Q", "RT"])
+@pytest.mark.parametrize("phi", [disk, flower])
+def test_quadratic_reproduced_exactly_on_quads(phi, method):
+    """Same on a structured quad mesh, for HDG, HDG-Q[k] and mixed RT. At this mesh the
+    element at the origin has grad phi = 0/0 at a quadrature point of the
+    paths; it must not reach the matrix (boundary_ds evaluates only on the
+    elements with a facet on Gamma_h)."""
+    from poisson_tpm_quads import METHODS, quad_mesh
+    g = lambda X, Y: X * X - 2 * X * Y + Y
+    mesh = quad_mesh(0.2)
+    (qh, uh, *_), inner = METHODS[method](mesh, 2, CF(-2.0), g, phi)
+    err = sqrt(Integrate((uh - g(x, y)) ** 2 * dx(definedonelements=inner), mesh))
+    assert err < 1e-10
