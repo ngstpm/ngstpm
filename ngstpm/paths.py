@@ -3,7 +3,7 @@
 import itertools
 
 import numpy as np
-from ngsolve import (CF, Discontinuous, FacetFESpace, GridFunction, IfPos, InnerProduct, L2, VOL,
+from ngsolve import (CF, Discontinuous, FacetFESpace, Grad, GridFunction, IfPos, InnerProduct, L2, VOL,
                      specialcf, sqrt, x, y, z)
 
 from ._ngstpm import SideEval
@@ -29,17 +29,20 @@ class TransferPath:
     target   vector CF, the end x + ell sigma of the path, on Gamma;
     target_normal  unit normal of Gamma at target, from Omega_1 to Omega_2:
              normal(phi, *target) for a level set, sigma for closest-point paths.
-    ell, sigma and the start x of target are SideEval nodes: evaluated on the
-    element of D at the integration point (an interface measure redirects
+    grad_d   matrix CF, the gradient of d = ell sigma, (grad_d)_ij = d_j d_i (for
+             RegionIntegral); None for the legacy "facet-normal" kind.
+    ell, sigma, grad_d and the start x of target are SideEval nodes: evaluated on
+    the element of D at the integration point (an interface measure redirects
     them to the partner element).
 
     Data at the end of the path: a callable of the coordinates, g(X, Y), is
     evaluated there as g(*p.target) (a vector CF unpacks into its components).
     """
 
-    def __init__(self, mesh, elements, facets, geo, kind, ell, sigma, target, target_normal):
+    def __init__(self, mesh, elements, facets, geo, kind, ell, sigma, target, target_normal, grad_d=None):
         self.mesh, self.elements, self.facets, self.geo, self.kind = mesh, elements, facets, geo, kind
         self.ell, self.sigma, self.target, self.target_normal = ell, sigma, target, target_normal
+        self.grad_d = grad_d
 
 
 def transfer_paths(mesh, geo, D=None, *, kind=None, order=ORDER, facets=None):
@@ -70,19 +73,21 @@ def transfer_paths(mesh, geo, D=None, *, kind=None, order=ORDER, facets=None):
     if kind not in kinds:
         raise ValueError(f"kind {kind!r} not supported by this geometry; supported: {kinds}")
     if kind == "closest":
-        ell, sigma = _closest_point_paths(mesh, geo, D, order, facets=facets)
+        ell, sigma, grad_d = _closest_point_paths(mesh, geo, D, order, facets=facets)
     else:
-        ell, sigma = _level_set_paths(mesh, geo, D, order, kind=kind)
+        ell, sigma, grad_d = _level_set_paths(mesh, geo, D, order, kind=kind)
     side = lambda cf: SideEval(cf, None, mesh, D)          # on this side's element (or its partner)
     ell, sigma = side(ell), side(sigma)
+    grad_d = None if grad_d is None else side(grad_d)
     # on the partner of an interface measure the path ends at the integration point's xbar
     target = SideEval(side(CF((x, y, z)[:mesh.dim])) + ell * sigma, None, mesh, D, path_end=True)
     nbar = sigma if kind == "closest" else normal(geo, *target)
-    return TransferPath(mesh, D, facets, geo, kind, ell, sigma, target, nbar)
+    return TransferPath(mesh, D, facets, geo, kind, ell, sigma, target, nbar, grad_d)
 
 
 def _level_set_paths(mesh, phi, inner, degree, newton_steps=4, delta=1e-6, kind="quasi-normal"):
-    """ell, sigma of the level-set kinds, elementwise of the given degree.
+    """ell, sigma and grad_d (None for "facet-normal") of the level-set kinds,
+    elementwise of the given degree.
 
     "quasi-normal": sigma = grad phi / |grad phi| at x; ell solves
     phi(x + ell sigma) = 0 by Newton from -phi/|grad phi|. Both are stored as
@@ -110,7 +115,7 @@ def _level_set_paths(mesh, phi, inner, degree, newton_steps=4, delta=1e-6, kind=
             dphi = (at(ell + delta) - at(ell - delta)) / (2 * delta)
             new.Set(ell - at(ell) / dphi, dual=True, definedonelements=inner)
             ell, new = new, ell
-        return ell, sigma
+        return ell, sigma, None
     V = L2(mesh, order=degree)
     p = phi(*X)
     grad = [p.Diff(Xi) for Xi in X]
@@ -129,11 +134,18 @@ def _level_set_paths(mesh, phi, inner, degree, newton_steps=4, delta=1e-6, kind=
         dphi = (phi_at(ell + delta) - phi_at(ell - delta)) / (2 * delta)
         new.Set(ell - phi_at(ell) / dphi, definedonelements=inner)
         ell, new = new, ell
-    return ell, sigma
+    return ell, sigma, _grad_d(ell, comps)
+
+
+def _grad_d(ell, comps):
+    """The gradient of d = ell sigma, (grad d)_ij = d_j d_i, from the elementwise
+    GridFunctions ell and sigma_i (the product rule; no re-projection)."""
+    rows = [c * Grad(ell) + ell * Grad(c) for c in comps]
+    return CF(tuple(rows), dims=(len(comps), len(comps)))
 
 
 def _closest_point_paths(mesh, geo, inner, order, facets=None):
-    """ell, sigma as elementwise P_order GridFunctions, fitted (least squares
+    """ell, sigma (and grad_d) as elementwise P_order GridFunctions, fitted (least squares
     of minimal norm: only the traces count) to the closest-point data at
     nodes on the facets of Gamma_h: those where an element of inner meets an
     element outside inner or, if given, the facets of the BitArray facets."""
@@ -189,7 +201,7 @@ def _closest_point_paths(mesh, geo, inner, order, facets=None):
         gf = GridFunction(V)
         gf.Set(InnerProduct(cm, psi), definedonelements=inner)
         fields.append(gf)
-    return fields[0], CF(tuple(fields[1:]))
+    return fields[0], CF(tuple(fields[1:])), _grad_d(fields[0], fields[1:])
 
 
 def normal(phi, *X, delta=1e-6):

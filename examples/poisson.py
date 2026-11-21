@@ -6,7 +6,7 @@ from ngsolve.meshes import MakeStructured2DMesh
 def solve_linear_system(lhs, rhs, gfu, inverse=""):
     lhs.Assemble()
     free_dofs = gfu.space.FreeDofs(coupling=lhs.condense)
-    Ainv = lhs.mat.Inverse(free_dofs, inverse=inverse)
+    Ainv = inverse(lhs.mat, free_dofs) if callable(inverse) else lhs.mat.Inverse(free_dofs, inverse=inverse)
 
     rhs.Assemble()
     b = rhs.vec.CreateVector()

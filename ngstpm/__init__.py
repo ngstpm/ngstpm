@@ -10,6 +10,9 @@ extrapolated) and CoefficientFunctions:
                                functions, GridFunctions and x, y, z moved along
                                the path; k+1 Gauss points (+2 for coefficients)
     u.Transfer(p, gradient=G)  u.Extrapolate() + G.PathIntegral(p), G ~ grad u
+    f.RegionIntegral(p)        on Gamma_h, the integrand whose integral over Gamma_h is
+                               int f over the region swept by the paths p (between
+                               Gamma_h and Gamma); f as in PathIntegral, or a plain CF
 
 and provides the unfitted geometry: the interior subdomain D_h of {phi < 0},
 the facet measures interior_ds(mesh, D) and boundary_ds(mesh, D) (Gamma_h,
@@ -24,7 +27,7 @@ the band up to Gamma (matplotlib, 2D).
 
 import ngsolve  # noqa: F401  (registers the NGSolve types used by _ngstpm)
 import numpy as np
-from ngsolve import CF, CoefficientFunction, InnerProduct, x, y, z
+from ngsolve import CF, Cof, CoefficientFunction, Id, InnerProduct, specialcf, x, y, z
 from ngsolve.comp import ProxyFunction
 
 from ._ngstpm import ComponentSpace, Extrapolate, Leaves, OwnElements, SideEval
@@ -130,6 +133,53 @@ def _path_integral(self, path):
     return sum(terms[1:], terms[0])
 
 
+def _region_integral(self, path, order=None):
+    """On Gamma_h of the path's element set, sum_j w_j J(s_j) f(x + s_j d), f = self:
+    integrated over Gamma_h (boundary_ds(mesh, path.elements), or I.ds on the
+    path's own side) it gives int f over the region swept by the paths,
+    {x + s d : x in Gamma_h, s in [0, 1]}, d = ell sigma.
+
+    J(s) = d . Cof(I + s grad d) n, n the outward normal of the element K of x:
+    the signed volume element of the map (x, s) -> x + s d (in 2D,
+    d x (tau + s (grad d) tau), tau = (-n_y, n_x)). It is kept signed, so where
+    the patches of staircase facets fold the contributions cancel.
+    As in PathIntegral, trial functions and GridFunctions in f are extrapolated
+    from the element of x, and x, y, z become x + s_j d; test functions raise.
+    Gauss-Legendre with order + dim points on [0, 1] (exact for f of degree
+    order along the path); order default: the highest order of the spaces of
+    the trial functions and GridFunctions in f, plus 2 if f has non-constant
+    coefficients (coordinates, GridFunctions, other CFs).
+    Not for the partner side of an interface measure: there n and the facet are
+    the own side's while d would be the partner's (this is not detected).
+    """
+    trial, test, gfs, coefficients = Leaves(self)
+    if test:
+        raise TypeError("RegionIntegral: test functions are never extrapolated (trial functions only)")
+    if path.grad_d is None:
+        raise NotImplementedError(f"RegionIntegral: not available for {path.kind!r} paths")
+    if order is None:
+        order = max([_check_side(q, path).globalorder for q in trial]
+                    + [g.space.globalorder for g in gfs], default=0) + (2 if coefficients else 0)
+    else:
+        for q in trial:
+            _check_side(q, path)
+    D = path.mesh.dim
+    start = SideEval(CF((x, y, z)[:D]), None, path.mesh, path.elements)
+    d = path.ell * path.sigma
+    n = specialcf.normal(D)
+    t, w = np.polynomial.legendre.leggauss(order + D)
+    terms = []
+    for tj, wj in zip(t, w):
+        s = 0.5 * (tj + 1)
+        yj = start + s * d
+        rep = {q: q.Extrapolate(yj, side=path) for q in trial}
+        rep.update({g: SideEval(g, yj, path.mesh, path.elements) for g in gfs})
+        rep.update({X: yj[i] for i, X in enumerate((x, y, z)[:D])})
+        J = InnerProduct(d, Cof(Id(D) + s * path.grad_d) * n)
+        terms.append(0.5 * wj * J * self.Replace(rep))
+    return sum(terms[1:], terms[0])
+
+
 def _transfer(self, path, *, gradient):
     """The trial function moved from the start of the path to path.target:
     self.Extrapolate(side=path) + gradient.PathIntegral(path), gradient ~ grad u."""
@@ -141,6 +191,7 @@ def _transfer(self, path, *, gradient):
 ProxyFunction.Extrapolate = _extrapolate
 ProxyFunction.Transfer = _transfer
 CoefficientFunction.PathIntegral = _path_integral
+CoefficientFunction.RegionIntegral = _region_integral
 
 from . import measure  # noqa: E402,F401  (I.ds; BilinearForm += splits interface integrals)
 from . import twomesh  # noqa: E402,F401  (I.Space, I.BilinearForm, ...: two meshes)
