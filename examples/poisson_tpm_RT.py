@@ -69,7 +69,7 @@ if __name__ == "__main__":
             for maxh in (0.2, 0.1, 0.05, 0.025):
                 mesh = background_mesh(maxh)
                 (qh, uh), inner = solve(mesh, k, f, g, phi)
-                dV = dx(definedonelements=inner)
+                dV = dx(definedonelements=inner, bonus_intorder=6)
                 eu = sqrt(Integrate((uh - uex) ** 2 * dV, mesh))
                 eq = sqrt(Integrate((qh - qex) ** 2 * dV, mesh))
                 if prev:

@@ -65,8 +65,8 @@ if __name__ == "__main__":
         for N in (4, 8, 16, 32):
             mesh = MakeStructured2DMesh(quads=False, nx=N, ny=N)
             qh, uh, _ = solve(mesh, k, f, uex)
-            eu = sqrt(Integrate((uh - uex) ** 2, mesh))
-            eq = sqrt(Integrate((qh - qex) ** 2, mesh))
+            eu = sqrt(Integrate((uh - uex) ** 2 * dx(bonus_intorder=6), mesh))
+            eq = sqrt(Integrate((qh - qex) ** 2 * dx(bonus_intorder=6), mesh))
             if prev:
                 ru, rq = log2(prev[0] / eu), log2(prev[1] / eq)
                 print(f"  N={N:3d}  |u-uh|={eu:.3e} ({ru:.2f})  |q-qh|={eq:.3e} ({rq:.2f})")

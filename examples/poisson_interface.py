@@ -132,7 +132,7 @@ def domains(family, maxh, phi):
 def errors(mesh, sol, D1, D2, u1, u2, q1, q2):
     eu = eq = 0
     for D, uh, qh, ue, qe in ((D1, sol[1], sol[0], u1, q1), (D2, sol[4], sol[3], u2, q2)):
-        dV = dx(definedonelements=D, bonus_intorder=4)
+        dV = dx(definedonelements=D, bonus_intorder=6)
         eu += Integrate((uh - ue(x, y)) ** 2 * dV, mesh)
         eq += Integrate((qh - qe(x, y)) ** 2 * dV, mesh)
     return sqrt(eu), sqrt(eq)

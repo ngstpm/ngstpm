@@ -95,8 +95,8 @@ if __name__ == "__main__":
         for maxh in (0.4, 0.2, 0.1):
             mesh1, mesh2 = meshes(maxh, 1.23 * maxh)                  # non-matching on Gamma
             sol = solve(mesh1, mesh2, k, phi, kappa1, kappa2, f1, f2, gD, gN, u2(x, y))
-            eu = sqrt(Integrate((sol[1] - u1(x, y))**2 * dx, mesh1) + Integrate((sol[4] - u2(x, y))**2 * dx, mesh2))
-            eq = sqrt(Integrate((sol[0] - q1(x, y))**2 * dx, mesh1) + Integrate((sol[3] - q2(x, y))**2 * dx, mesh2))
+            eu = sqrt(Integrate((sol[1] - u1(x, y))**2 * dx(bonus_intorder=6), mesh1) + Integrate((sol[4] - u2(x, y))**2 * dx(bonus_intorder=6), mesh2))
+            eq = sqrt(Integrate((sol[0] - q1(x, y))**2 * dx(bonus_intorder=6), mesh1) + Integrate((sol[3] - q2(x, y))**2 * dx(bonus_intorder=6), mesh2))
             rates = f"({log2(prev[0] / eu):.2f})  " if prev else "        "
             print(f"  h={maxh:5.3f}  |u-uh|={eu:.3e} {rates}|q-qh|={eq:.3e}")
             prev = (eu, eq)
