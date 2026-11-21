@@ -56,7 +56,7 @@ def solve(mesh, order, f, g, phi, tau=1.0):
     rhs += g(*p.target) * mu * dB
 
     gfu = GridFunction(fes)
-    gfu.components[2].Set(g(*X), definedon=mesh.Boundaries(".*"))  # fitted part of the boundary
+    gfu.components[2].Set(g(*X), definedon=mesh.Boundaries(".*"))  # background-mesh boundary (not part of Gamma)
     solve_linear_system(lhs, rhs, gfu)
     return gfu.components, inner
 
