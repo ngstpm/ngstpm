@@ -40,7 +40,7 @@ pip install -e ".[test,examples]"
 The last line downloads NGSolve, compiles the C++ module (about half a
 minute) and installs `ngstpm` together with pytest and matplotlib (for the
 drawing example). Check the installation with the tests (about a minute;
-expect `174 passed, 10 skipped`):
+expect `186 passed, 10 skipped`):
 
 ```
 pytest
@@ -187,13 +187,28 @@ The two sides may also live on two independent meshes:
 Interface: `I.Space(fes1, fes2)`, `I.BilinearForm`, `I.LinearForm`,
 `I.GridFunction`. The weak form is unchanged.
 
+### Plotting
+
+`plot(u, p)` draws a scalar field (`uh`, `qh[0]`, `Norm(qh)`, `uh - uex`, ...)
+on `D_h = p.elements` with matplotlib (2D; `pip install matplotlib`) and
+returns the Axes, with the mesh and `Gamma` (the ends of the paths) on top.
+`extend=True` also fills the band between `Gamma_h` and `Gamma` along the
+paths: a point `y` of the path of `x`, with `K` the element of `x`, gets
+`u_h|K(x) + ∫_x^y G · dl` with `gradient=G` (`G ≈ grad u`), or the polynomial
+extrapolation `u_h|K(y)` without it.
+
+```python
+ax = plot(uh, p, extend=True, gradient=-qh, cmap="jet")   # q = -grad u
+```
+
 ## Examples and tests
 
 ```
 python examples/poisson.py              # fitted HDG, unit square
 python examples/poisson_tpm.py          # Dirichlet: disk, flower, annulus, square with a hole
-python examples/poisson_tpm_draw.py     # draws u_h on each of them (needs matplotlib)
+python examples/poisson_tpm_draw.py     # draws u_h on each of them with plot() (needs matplotlib)
 python examples/poisson_tpm_RT.py       # the same with mixed Raviart-Thomas instead of HDG
+python examples/poisson_tpm_quads.py    # HDG, HDG-Q[k] (enriched flux) and RT on quadrilaterals
 python examples/poisson_tpm_3d.py       # Dirichlet: ball, torus (a few minutes)
 python examples/poisson_tpm_neumann.py  # Neumann condition on the unfitted boundary
 python examples/poisson_interface.py    # interface problem: fitted, snapped, unfitted
