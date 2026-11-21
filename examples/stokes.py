@@ -1,8 +1,7 @@
-from math import log2
-
 from ngsolve import *
 from ngsolve.meshes import MakeStructured2DMesh
 
+from convergence import coefficients, main
 from poisson import solve_linear_system
 
 
@@ -120,6 +119,18 @@ class BorderedInverse(BaseMatrix):
             self.rho = xr[-1]
 
 
+def shifted(gf, c):
+    """gf + c as a GridFunction of the space of gf, a pressure space L2(..., lowest_order_wb=True):
+    c is added to the coefficients of the element constants (its wirebasket dofs; the constant
+    basis function is 1)."""
+    out = GridFunction(gf.space)
+    out.vec.data = gf.vec
+    for d in range(gf.space.ndof):
+        if gf.space.CouplingType(d) == COUPLING_TYPE.WIREBASKET_DOF:
+            out.vec[d] += c
+    return out
+
+
 def stokes_data(u, p, nu):
     """L = grad u and f = -div(nu L - p I) for a 2D velocity u and pressure p."""
     L = CF((u.Diff(x), u.Diff(y)), dims=(2, 2)).trans
@@ -128,27 +139,26 @@ def stokes_data(u, p, nu):
     return L, f
 
 
-if __name__ == "__main__":
+NU = {"nu1": 1.0, "nu1e-6": 1e-6}
+CASES = {case: {k: (4, 8, 16, 32) for k in (1, 2, 3)} for case in NU}   # the mesh parameter is N (N x N squares)
+
+
+def row(case, k, N, solution=False):
+    """Errors of L, u, p (and the solution) for the paper's solution on the unit square, nu = NU[case]."""
+    nu = NU[case]
     uex = CF((sin(pi * x) * sin(pi * y), cos(pi * x) * cos(pi * y)))
     pex = sin(2 * pi * x) * sin(2 * pi * y)
+    Lex, f = stokes_data(uex, pex, nu)
+    mesh = MakeStructured2DMesh(quads=False, nx=int(N), ny=int(N))
+    sol = solve(mesh, k, f, uex, nu=nu)
+    Lh, uh, ph = sol[:3]
+    r = {"|L-Lh|": sqrt(Integrate(InnerProduct(Lh - Lex, Lh - Lex), mesh, order=2 * k + 6)),
+         "|u-uh|": sqrt(Integrate((uh - uex) ** 2, mesh, order=2 * k + 6)),
+         "|p-ph|": sqrt(Integrate((ph - pex) ** 2, mesh, order=2 * k + 6))}
+    if solution:
+        r["solution"] = coefficients(sol)
+    return r
 
-    for nu in (1.0, 1e-6):
-        print(f"nu = {nu:g}")
-        Lex, f = stokes_data(uex, pex, nu)
-        for k in (1, 2, 3):
-            print(f"  k = {k}")
-            prev = None
-            for N in (4, 8, 16, 32):
-                mesh = MakeStructured2DMesh(quads=False, nx=N, ny=N)
-                Lh, uh, ph, *_ = solve(mesh, k, f, uex, nu=nu)
-                eL = sqrt(Integrate(InnerProduct(Lh - Lex, Lh - Lex), mesh, order=2 * k + 6))
-                eu = sqrt(Integrate((uh - uex) ** 2, mesh, order=2 * k + 6))
-                ep = sqrt(Integrate((ph - pex) ** 2, mesh, order=2 * k + 6))
-                if prev:
-                    rL, ru, rp = log2(prev[0] / eL), log2(prev[1] / eu), log2(prev[2] / ep)
-                    print(f"    N={N:3d}  |L-Lh|={eL:.3e} ({rL:.2f})  |u-uh|={eu:.3e} ({ru:.2f})"
-                          f"  |p-ph|={ep:.3e} ({rp:.2f})")
-                else:
-                    print(f"    N={N:3d}  |L-Lh|={eL:.3e}         |u-uh|={eu:.3e}"
-                          f"         |p-ph|={ep:.3e}")
-                prev = (eL, eu, ep)
+
+if __name__ == "__main__":
+    main(row, CASES, ("|L-Lh|", "|u-uh|", "|p-ph|"), size=lambda N: 1 / N, hname="N", hfmt="3d", htype=int)

@@ -25,15 +25,13 @@ note: "for O(h) gaps it is known that extrapolation may not be the best, which
 makes the flux interface condition suboptimal".
 """
 
-from concurrent.futures import ProcessPoolExecutor
-import sys
-
 from netgen.geom2d import SplineGeometry
 from ngsolve import *
 
 from poisson import solve_linear_system
-from stokes import multiplier_inverse
-from stokes_interface import errors, gap_integral, paper_solution, print_row
+from convergence import coefficients, main
+from stokes import multiplier_inverse, shifted
+from stokes_interface import errors, gap_integral, paper_solution
 from ngstpm import interior_ds, pair, transfer_paths
 
 
@@ -102,7 +100,7 @@ def solve(mesh1, mesh2, order, phi, f, g, nu=1.0, tau=1.0):
     alpha = -gap_integral(I, fes, gfu, dI, (p1, p2), (ph1, ph2), (mu1, mu2), order) / measure
     sol = list(gfu.components)
     for c in (2, 6):
-        sol[c] = sol[c] + alpha
+        sol[c] = shifted(sol[c], alpha)
     return sol, inverse.op.rho, alpha
 
 
@@ -110,28 +108,25 @@ def phi(X, Y):
     return 0.5 - Y                                                    # Omega_1 = {y > 1/2}
 
 
-DELTA = {"0": lambda h: 0, "h^2": lambda h: h * h, "h/2": lambda h: h / 2}
+DELTA = {"0": lambda h: 0, "h2": lambda h: h * h, "hhalf": lambda h: h / 2}
+CASES = {f"gap-{gap}": {k: (0.2, 0.1, 0.05, 0.025) for k in (1, 2)} for gap in DELTA}   # case "gap-<delta rule>"
 
 
-def row(gap, k, maxh):
-    """The errors, |rho|, alpha and the number of elements, for the
-    paper's solution, nu = 1, with the gap DELTA[gap](maxh)."""
+def row(case, k, maxh, solution=False):
+    """The errors, |rho|, alpha and the number of elements (and the solution), for the
+    paper's solution, nu = 1, with the gap DELTA[...](maxh) of case."""
     uex, pex, Lex, f = paper_solution()
-    mesh1, mesh2 = meshes(maxh, 1.23 * maxh, DELTA[gap](maxh))      # non-matching on Gamma
+    delta = DELTA[case[4:]](maxh)
+    mesh1, mesh2 = meshes(maxh, 1.23 * maxh, delta)                  # non-matching on Gamma
     sol, rho, alpha = solve(mesh1, mesh2, k, phi, f, uex)
     e = errors(((mesh1, None), (mesh2, None)), sol, alpha, Lex, uex, pex)
-    return e, abs(rho), alpha, mesh1.ne + mesh2.ne
+    r = dict(zip(("|L-Lh|", "|u-uh|", "|p-ph|", "ptilde"), e),
+             **{"N": mesh1.ne + mesh2.ne, "|rho|": abs(rho), "alpha": alpha, "delta": delta})
+    if solution:
+        r["solution"] = coefficients(sol)
+    return r
 
 
 if __name__ == "__main__":
-    # each row in a new process: NGSolve's umfpack inverse does not give its memory back
-    with ProcessPoolExecutor(1, max_tasks_per_child=1) as pool:
-        for gap in sys.argv[1:] or DELTA:
-            print(f"delta = {gap}")
-            for k in (1, 2):
-                print(f"  k = {k}")
-                prev = None
-                for maxh in (0.2, 0.1, 0.05, 0.025):
-                    e, rho, alpha, N = pool.submit(row, gap, k, maxh).result()
-                    print_row(maxh, e, prev, rho, alpha, N)
-                    prev = e + [maxh]
+    main(row, CASES, ("|L-Lh|", "|u-uh|", "|p-ph|", "ptilde"), {"N": "6.0f", "|rho|": ".1e", "alpha": ".2e"},
+         hfmt="6.4f")

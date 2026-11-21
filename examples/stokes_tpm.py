@@ -16,14 +16,12 @@ over Omega zero (cf. Manriquez-Nguyen-Solano 2022, Section 5):
 the integral over the region between Gamma_h and Gamma by RegionIntegral.
 """
 
-from concurrent.futures import ProcessPoolExecutor
-from math import log
-
 from ngsolve import *
 
 from poisson import solve_linear_system
 from poisson_tpm import GEOMETRIES, background_mesh
-from stokes import multiplier_inverse, stokes_data
+from convergence import coefficients, main
+from stokes import multiplier_inverse, shifted, stokes_data
 from ngstpm import boundary_ds, interior_ds, restrict, transfer_paths, unfitted_domain
 
 
@@ -75,36 +73,30 @@ def solve(mesh, order, f, g, phi, nu=1.0, tau=1.0):
 
     Lh, uh, pt, uhath, rhoh, alphah = gfu.components
     alpha = alphah.vec[0]
-    return (Lh, uh, pt + alpha, uhath, rhoh), inner, alpha
+    return (Lh, uh, shifted(pt, alpha), uhath, rhoh), inner, alpha
 
 
-def row(name, k, maxh, nu=1.0):
-    """Errors on D_h of L, u, p, ptilde, and |rho|, alpha, for the paper's solution."""
+CASES = {name: {k: (0.2, 0.141, 0.1, 0.0707, 0.05, 0.0354) for k in (1, 2)} for name in ("disk", "flower")}
+
+
+def row(case, k, maxh, solution=False):
+    """Errors on D_h of L, u, p and ptilde ("unshifted"), |rho|, alpha (and the solution)
+    for the paper's solution, nu = 1, on the geometry case."""
     g = lambda X, Y: CF((sin(pi * X) * sin(pi * Y), cos(pi * X) * cos(pi * Y)))
     uex = g(x, y)
     pex = sin(2 * pi * x) * sin(2 * pi * y)
-    Lex, f = stokes_data(uex, pex, nu)
+    Lex, f = stokes_data(uex, pex, 1.0)
     mesh = background_mesh(maxh)
-    (Lh, uh, ph, _, rho), inner, alpha = solve(mesh, k, f, g, GEOMETRIES[name], nu=nu)
+    sol, inner, alpha = solve(mesh, k, f, g, GEOMETRIES[case])
+    Lh, uh, ph, _, rho = sol
     dV = dx(definedonelements=inner, bonus_intorder=4)
     e = [sqrt(Integrate(InnerProduct(a - b, a - b) * dV, mesh))
          for a, b in ((Lh, Lex), (uh, uex), (ph, pex), (ph - alpha, pex))]
-    return e, abs(rho.vec[0]), alpha
+    r = dict(zip(("|L-Lh|", "|u-uh|", "|p-ph|", "unshifted"), e), **{"|rho|": abs(rho.vec[0]), "alpha": alpha})
+    if solution:
+        r["solution"] = coefficients(sol)
+    return r
 
 
 if __name__ == "__main__":
-    # each row in a new process: NGSolve's umfpack inverse does not give its memory back
-    with ProcessPoolExecutor(1, max_tasks_per_child=1) as pool:
-        for name in ("disk", "flower"):
-            print(name)
-            for k in (1, 2):
-                print(f"  k = {k}")
-                prev = None
-                for maxh in (0.2, 0.141, 0.1, 0.0707, 0.05, 0.0354):
-                    e, rho, alpha = pool.submit(row, name, k, maxh).result()
-                    r = ([f"({log(a / b) / log(prev[4] / maxh):.2f})" for a, b in zip(prev, e)] if prev
-                         else [" " * 6] * 4)
-                    print(f"    h={maxh:6.4f}  |L-Lh|={e[0]:.3e} {r[0]}  |u-uh|={e[1]:.3e} {r[1]}"
-                          f"  |p-ph|={e[2]:.3e} {r[2]}  unshifted {e[3]:.3e} {r[3]}"
-                          f"  |rho|={rho:.1e}  alpha={alpha:.1e}", flush=True)
-                    prev = e + [maxh]
+    main(row, CASES, ("|L-Lh|", "|u-uh|", "|p-ph|", "unshifted"), {"|rho|": ".1e", "alpha": ".1e"}, hfmt="6.4f")

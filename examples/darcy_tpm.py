@@ -19,12 +19,9 @@ With paths of length O(h) its rates are irregular, as for poisson_tpm_neumann.py
 the flux interface condition suboptimal" (J. Manriquez).
 """
 
-from concurrent.futures import ProcessPoolExecutor
-from math import log2
-import sys
-
 from ngsolve import *
 
+from convergence import coefficients, main
 from darcy import darcy_data
 from poisson import solve_linear_system
 from poisson_tpm import GEOMETRIES, background_mesh
@@ -86,38 +83,28 @@ def solve_neumann(mesh, order, kappa, f, g, gN, phi, tau=1.0):
 
 
 KAPPA = {"I": CF((1, 0, 0, 1), dims=(2, 2)), "tensor": CF((2, 0.5, 0.5, 1), dims=(2, 2))}
-CASES = {"disk": ("disk", "I"), "flower": ("flower", "I"), "disk, tensor kappa": ("disk", "tensor"),
-         "neumann": (None, "I")}
+SETUPS = {"disk": ("disk", "I"), "flower": ("flower", "I"), "disk-tensor": ("disk", "tensor"), "neumann": (None, "I")}
+CASES = {case: {k: (0.2, 0.1, 0.05, 0.025) for k in (1, 2, 3)} for case in SETUPS}
 
 
-def row(case, k, maxh):
-    """Errors of u, p on D_h for p = cos(pi x) cos(pi y)."""
-    name, kappa = CASES[case][0], KAPPA[CASES[case][1]]
+def row(case, k, maxh, solution=False):
+    """Errors of u, p on D_h (and the solution) for p = cos(pi x) cos(pi y)."""
+    name, kappa = SETUPS[case][0], KAPPA[SETUPS[case][1]]
     pex = lambda X, Y: cos(pi * X) * cos(pi * Y)
     uex, f = darcy_data(pex(x, y), kappa)
     mesh = background_mesh(maxh)
     if name is None:                                                  # the geometry of poisson_tpm_neumann.py
         uN = lambda X, Y: -kappa * CF((-pi * sin(pi * X) * cos(pi * Y), -pi * cos(pi * X) * sin(pi * Y)))
-        (uh, ph, _), inner = solve_neumann(mesh, k, kappa, f, pex, uN, lambda X, Y: 0.6 - sqrt(X*X + Y*Y))
+        sol, inner = solve_neumann(mesh, k, kappa, f, pex, uN, lambda X, Y: 0.6 - sqrt(X*X + Y*Y))
     else:
-        (uh, ph, _), inner = solve(mesh, k, kappa, f, pex, GEOMETRIES[name])
+        sol, inner = solve(mesh, k, kappa, f, pex, GEOMETRIES[name])
+    uh, ph, _ = sol
     dV = dx(definedonelements=inner, bonus_intorder=4)
-    return sqrt(Integrate((uh - uex) ** 2 * dV, mesh)), sqrt(Integrate((ph - pex(x, y)) ** 2 * dV, mesh))
+    r = {"|u-uh|": sqrt(Integrate((uh - uex) ** 2 * dV, mesh)), "|p-ph|": sqrt(Integrate((ph - pex(x, y)) ** 2 * dV, mesh))}
+    if solution:
+        r["solution"] = coefficients(sol)
+    return r
 
 
 if __name__ == "__main__":
-    # each row in a new process: NGSolve's umfpack inverse does not give its memory back
-    with ProcessPoolExecutor(1, max_tasks_per_child=1) as pool:
-        for case in sys.argv[1:] or CASES:
-            print(case)
-            for k in (1, 2, 3):
-                print(f"  k = {k}")
-                prev = None
-                for maxh in (0.2, 0.1, 0.05, 0.025):
-                    eu, ep = pool.submit(row, case, k, maxh).result()
-                    if prev:
-                        ru, rp = log2(prev[0] / eu), log2(prev[1] / ep)
-                        print(f"    h={maxh:5.3f}  |u-uh|={eu:.3e} ({ru:.2f})  |p-ph|={ep:.3e} ({rp:.2f})", flush=True)
-                    else:
-                        print(f"    h={maxh:5.3f}  |u-uh|={eu:.3e}         |p-ph|={ep:.3e}", flush=True)
-                    prev = (eu, ep)
+    main(row, CASES, ("|u-uh|", "|p-ph|"))

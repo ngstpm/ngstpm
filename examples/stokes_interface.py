@@ -34,17 +34,14 @@ O(h) gaps it is known that extrapolation may not be the best, which makes the
 flux interface condition suboptimal".
 """
 
-from concurrent.futures import ProcessPoolExecutor
-from math import log
-import sys
-
 import numpy as np
 from netgen.geom2d import SplineGeometry
 from ngsolve import *
 
 from poisson import solve_linear_system
 from poisson_interface import domains
-from stokes import multiplier_inverse, stokes_data
+from convergence import coefficients, main
+from stokes import multiplier_inverse, shifted, stokes_data
 from ngstpm import interior_ds, pair, restrict, transfer_paths
 
 def sliver(path, f, npoints):
@@ -141,7 +138,7 @@ def solve(mesh, order, phi, D1, D2, f, g, nu=1.0, tau=1.0):
     sol = list(gfu.components[:8])
     alpha = gfu.components[8].vec[0]
     for c in (2, 6):
-        sol[c] = sol[c] + alpha
+        sol[c] = shifted(sol[c], alpha)
     return sol, inverse.op.rho, alpha
 
 
@@ -184,39 +181,25 @@ def paper_solution(nu=1.0):
     return (uex, pex, *stokes_data(uex, pex, nu))
 
 
-def row(family, k, maxh):
-    """The errors, |rho| and alpha for the paper's solution, nu = 1."""
+DISK = {1: (0.2, 0.141, 0.1, 0.0707, 0.05, 0.035), 2: (0.2, 0.141, 0.1, 0.0707)}   # < 2 GB per solve
+CASES = {"flat": {1: (0.2, 0.1, 0.05, 0.025), 2: (0.2, 0.1, 0.05, 0.025)},
+         "fitted": DISK, "snapped": DISK, "unfitted": DISK}
+
+
+def row(case, k, maxh, solution=False):
+    """The errors, |rho| and alpha (and the solution) for the paper's solution, nu = 1."""
     uex, pex, Lex, f = paper_solution()
-    if family == "flat":
+    if case == "flat":
         (mesh, D1, D2), geo = square_mesh(maxh), phi
     else:
-        (mesh, D1, D2), geo = domains(family, maxh, disk), disk
+        (mesh, D1, D2), geo = domains(case, maxh, disk), disk
     sol, rho, alpha = solve(mesh, k, geo, D1, D2, f, uex)
-    return errors(((mesh, D1), (mesh, D2)), sol, alpha, Lex, uex, pex), abs(rho), alpha
-
-
-def print_row(maxh, e, prev, rho, alpha, N=None):
-    """One table row: L, u, p with EOC (log ratio of errors / log ratio of h), ptilde, |rho|, alpha."""
-    r = [f"({log(a / b) / log(prev[-1] / maxh):.2f})" for a, b in zip(prev, e)] if prev else [" " * 6] * len(e)
-    print(f"    h={maxh:6.4f}" + (f"  N={N:6d}" if N else "")
-          + "".join(f"  {c}={ei:.3e} {ri}" for c, ei, ri in zip(("|L-Lh|", "|u-uh|", "|p-ph|", "ptilde"), e, r))
-          + f"  |rho|={rho:.1e}  alpha={alpha:.2e}", flush=True)
-
-
-MAXH = {"flat": {1: (0.2, 0.1, 0.05, 0.025), 2: (0.2, 0.1, 0.05, 0.025)},
-        "disk": {1: (0.2, 0.141, 0.1, 0.0707, 0.05, 0.035), 2: (0.2, 0.141, 0.1, 0.0707)}}   # < 2 GB per solve
+    e = errors(((mesh, D1), (mesh, D2)), sol, alpha, Lex, uex, pex)
+    r = dict(zip(("|L-Lh|", "|u-uh|", "|p-ph|", "ptilde"), e), **{"|rho|": abs(rho), "alpha": alpha})
+    if solution:
+        r["solution"] = coefficients(sol)
+    return r
 
 
 if __name__ == "__main__":
-    families = sys.argv[1:] or ["flat", "fitted", "snapped", "unfitted"]
-    # each row in a new process: NGSolve's umfpack inverse does not give its memory back
-    with ProcessPoolExecutor(1, max_tasks_per_child=1) as pool:
-        for family in families:
-            print(family)
-            for k in (1, 2):
-                print(f"  k = {k}")
-                prev = None
-                for maxh in MAXH["flat" if family == "flat" else "disk"][k]:
-                    e, rho, alpha = pool.submit(row, family, k, maxh).result()
-                    print_row(maxh, e, prev, rho, alpha)
-                    prev = e + [maxh]
+    main(row, CASES, ("|L-Lh|", "|u-uh|", "|p-ph|", "ptilde"), {"|rho|": ".1e", "alpha": ".2e"}, hfmt="6.4f")

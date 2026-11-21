@@ -9,11 +9,10 @@ constant or a matrix CF) in the first equation:
     <uhat . n, mu> = 0 on interior faces, <gN, mu> on Neumann faces, phat = g on Dirichlet faces.
 """
 
-from math import log2
-
 from netgen.geom2d import SplineGeometry
 from ngsolve import *
 
+from convergence import coefficients, main
 from poisson import solve_linear_system
 
 
@@ -61,25 +60,25 @@ def half_square(maxh):
     return Mesh(geo.GenerateMesh(maxh=maxh))
 
 
-if __name__ == "__main__":
+SETUPS = {"neumann-identity": (CF((1, 0, 0, 1), dims=(2, 2)), "top"),           # u.n = 0 on bottom/left/right, p on top
+          "dirichlet-tensor": (CF((2, 0.5, 0.5, 1), dims=(2, 2)), ".*")}       # kappa = [[2, 0.5], [0.5, 1]]
+CASES = {case: {k: (0.1, 0.05, 0.025, 0.0125) for k in (1, 2, 3)} for case in SETUPS}
+
+
+def row(case, k, maxh, solution=False):
+    """Errors of u, p (and the solution) for p = cos(pi x) cos(pi y) on the half square."""
+    kappa, dirichlet = SETUPS[case]
     pex = cos(pi * x) * cos(pi * y)
-    n = specialcf.normal(2)
-    cases = (("kappa = I, u.n = 0 on bottom/left/right, p on top", CF((1, 0, 0, 1), dims=(2, 2)), "top"),
-             ("kappa = [[2, 0.5], [0.5, 1]], all Dirichlet", CF((2, 0.5, 0.5, 1), dims=(2, 2)), ".*"))
-    for name, kappa, dirichlet in cases:
-        print(name)
-        uex, f = darcy_data(pex, kappa)
-        for k in (1, 2, 3):
-            print(f"  k = {k}")
-            prev = None
-            for maxh in (0.1, 0.05, 0.025, 0.0125):
-                mesh = half_square(maxh)
-                uh, ph, _ = solve(mesh, k, kappa, f, pex, uex * n, dirichlet)
-                eu = sqrt(Integrate((uh - uex) ** 2, mesh, order=2 * k + 6))
-                ep = sqrt(Integrate((ph - pex) ** 2, mesh, order=2 * k + 6))
-                if prev:
-                    ru, rp = log2(prev[0] / eu), log2(prev[1] / ep)
-                    print(f"    h={maxh:6.4f}  |u-uh|={eu:.3e} ({ru:.2f})  |p-ph|={ep:.3e} ({rp:.2f})")
-                else:
-                    print(f"    h={maxh:6.4f}  |u-uh|={eu:.3e}         |p-ph|={ep:.3e}")
-                prev = (eu, ep)
+    uex, f = darcy_data(pex, kappa)
+    mesh = half_square(maxh)
+    sol = solve(mesh, k, kappa, f, pex, uex * specialcf.normal(2), dirichlet)
+    uh, ph, _ = sol
+    r = {"|u-uh|": sqrt(Integrate((uh - uex) ** 2, mesh, order=2 * k + 6)),
+         "|p-ph|": sqrt(Integrate((ph - pex) ** 2, mesh, order=2 * k + 6))}
+    if solution:
+        r["solution"] = coefficients(sol)
+    return r
+
+
+if __name__ == "__main__":
+    main(row, CASES, ("|u-uh|", "|p-ph|"), hfmt="6.4f")

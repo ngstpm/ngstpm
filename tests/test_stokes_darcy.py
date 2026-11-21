@@ -90,7 +90,7 @@ def test_convergence_rate_gap(k, hanging):
     data = paper_data()
     errs = []
     for n in (8, 16):
-        mesh1, mesh2 = meshes(n, hanging, DELTA["h^7/4"](1 / n))
+        mesh1, mesh2 = meshes(n, hanging, DELTA["h74"](1 / n))
         sol, _, _ = solve(mesh1, mesh2, k, phi, data)
         errs.append(errors(mesh1, mesh2, sol, data))
     for e0, e1 in zip(*errs):

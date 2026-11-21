@@ -43,8 +43,6 @@ gap, as in BMS Tables 5, 6; delta = h/2, h/4 behave the same with smaller
 constants.
 """
 
-from concurrent.futures import ProcessPoolExecutor
-from math import log
 
 import numpy as np
 from ngsolve import *
@@ -53,7 +51,8 @@ from ngsolve.meshes import MakeStructured2DMesh
 from darcy import darcy_data
 from darcy_tpm import inverse
 from poisson import solve_linear_system
-from stokes import multiplier_inverse, stokes_data
+from convergence import coefficients, main
+from stokes import multiplier_inverse, shifted, stokes_data
 from ngstpm import boundary_ds, interior_ds, normal, pair, transfer_paths
 
 
@@ -163,7 +162,7 @@ def solve(mesh1, mesh2, order, phi, data, nu=1.0, kappa=CF((1, 0, 0, 1), dims=(2
 
     c = gfu.components
     rho, alpha = (c[4].vec[0], c[5].vec[0]) if level else (0.0, 0.0)
-    return (c[0], c[1], c[2] + alpha, c[3], *c[-3:]), rho, alpha
+    return (c[0], c[1], shifted(c[2], alpha), c[3], *c[-3:]), rho, alpha
 
 
 def stokes_darcy_data(u_s, P_s, p_d, phi, nu=1.0, kappa=CF((1, 0, 0, 1), dims=(2, 2)), omega=1.0):
@@ -200,36 +199,30 @@ def errors(mesh1, mesh2, sol, data):
             for mesh, a, b in pairs]
 
 
-DELTA = {"0": lambda h: 0.0, "h^7/4": lambda h: h ** 1.75, "h": lambda h: h}   # h = 1/n, the Stokes mesh size
-NS = {"0": {1: (8, 16, 32, 64), 2: (8, 16, 32, 64), 3: (4, 8, 16, 32)},   # k = 3, n = 64: 2.0 GB
-      "h^7/4": {1: (8, 16, 32, 64), 2: (8, 16, 32, 64), 3: (4, 8, 16, 32)},
-      "h": {1: (8, 16, 32, 64), 2: (8, 16, 32, 64), 3: (8, 16, 32, 48)}}  # n = 4: delta = 1/4
+DELTA = {"0": lambda h: 0.0, "h74": lambda h: h ** 1.75, "h": lambda h: h}   # h = 1/n, the Stokes mesh size
+# case "gap-<delta>-<vertices>" -> {k: default n list} (k = 3, n = 64: 2.0 GB; delta = h: from n = 8)
+CASES = {f"gap-{g}-{v}": {1: (8, 16, 32, 64), 2: (8, 16, 32, 64), 3: (8, 16, 32, 48) if g == "h" else (4, 8, 16, 32)}
+         for g in DELTA for v in ("matching", "hanging")}
 
 
-def row(hanging, k, n, gap="0"):
-    """The errors (and that of ptilde_s alone), |rho|, alpha and N for the paper's solution."""
+def row(case, k, n, solution=False):
+    """Errors, |rho|, alpha, N (and the solution) for the paper's solution on the meshes of case and n."""
+    _, gap, vertices = case.split("-")
+    n, hanging = int(n), vertices == "hanging"
+    delta = DELTA[gap](1 / n)
     data = paper_data()
-    mesh1, mesh2 = meshes(n, hanging, DELTA[gap](1 / n))
+    mesh1, mesh2 = meshes(n, hanging, delta)
     sol, rho, alpha = solve(mesh1, mesh2, k, phi, data)
-    eptilde = sqrt(Integrate((sol[2] - alpha - data["P_s"]) ** 2, mesh1, order=14))
-    return errors(mesh1, mesh2, sol, data) + [eptilde], abs(rho), alpha, mesh1.ne + mesh2.ne
+    e = errors(mesh1, mesh2, sol, data)
+    r = dict(zip(("e(L)", "u_s", "P_s", "u_d", "p_d"), e))
+    r.update({"e(u)": np.hypot(e[1], e[3]), "e(p)": np.hypot(e[2], e[4]),
+              "ptilde_s": sqrt(Integrate((sol[2] - alpha - data["P_s"]) ** 2, mesh1, order=14)),
+              "N": mesh1.ne + mesh2.ne, "|rho|": abs(rho), "alpha": alpha, "delta": delta, "hanging": hanging})
+    if solution:
+        r["solution"] = coefficients(sol)
+    return r
 
 
 if __name__ == "__main__":
-    # each row in a new process: NGSolve's umfpack inverse does not give its memory back
-    with ProcessPoolExecutor(1, max_tasks_per_child=1) as pool:
-        for gap in DELTA:
-            for hanging in (False, True):
-                print(f"delta = {gap}, " + ("hanging nodes" if hanging else "matching vertices"))
-                for k in (1, 2, 3):
-                    print(f"  k = {k}")
-                    prev = None
-                    for n in NS[gap][k]:
-                        e, rho, alpha, N = pool.submit(row, hanging, k, n, gap).result()
-                        tot = [e[0], np.hypot(e[1], e[3]), np.hypot(e[2], e[4])] + e[1:]
-                        r = ([f"({log(a / b) / log(n / prev[-1]):.2f})" for a, b in zip(prev, tot)] if prev
-                             else [" " * 6] * len(tot))
-                        names = ("e(L)", "e(u)", "e(p)", "u_s", "P_s", "u_d", "p_d", "ptilde_s")
-                        print(f"    n={n:3d}  N={N:6d}" + "".join(f"  {c}={v:.3e} {ri}" for c, v, ri in zip(names, tot, r))
-                              + f"  |rho|={rho:.1e}  alpha={alpha:.1e}", flush=True)
-                        prev = tot + [n]
+    main(row, CASES, ("e(L)", "e(u)", "e(p)", "u_s", "P_s", "u_d", "p_d", "ptilde_s"),
+         {"N": "6.0f", "|rho|": ".1e", "alpha": ".1e"}, size=lambda n: 1 / n, hname="n", hfmt="3d", htype=int)
