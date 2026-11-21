@@ -18,6 +18,8 @@ seen from D), the TransferPath of D from Gamma_h to Gamma = {phi = 0}
 pair(p1, p2) of the paths of the subdomains of {phi < 0} and {phi > 0}, with
 its measure I.ds(side=i). Instead of a level set, Gamma can be a
 ParametricCurve, a BSplineCurve or a PointCloud (closest-point paths).
+plot(u, p, extend=True) draws a scalar field on D_h and, along the paths, on
+the band up to Gamma (matplotlib, 2D).
 """
 
 import ngsolve  # noqa: F401  (registers the NGSolve types used by _ngstpm)
@@ -30,9 +32,10 @@ from .curves import BSplineCurve, ParametricCurve, PointCloud
 from .geometry import boundary_ds, boundary_facets, interior_ds, restrict, snapped_domains, unfitted_domain
 from .interface import Interface, pair
 from .paths import TransferPath, normal, transfer_paths
+from .plot import plot
 
 __all__ = ["BSplineCurve", "Interface", "ParametricCurve", "PointCloud", "TransferPath", "boundary_ds",
-           "boundary_facets", "interior_ds", "normal", "pair", "restrict", "shifted_eval", "snapped_domains",
+           "boundary_facets", "interior_ds", "normal", "pair", "plot", "restrict", "shifted_eval", "snapped_domains",
            "transfer_paths", "unfitted_domain"]
 
 
