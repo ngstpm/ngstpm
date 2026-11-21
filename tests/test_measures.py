@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from ngsolve import (
-    BilinearForm, FacetFESpace, GridFunction, Integrate, L2, LinearForm, VectorL2,
+    VOL, BilinearForm, FacetFESpace, GridFunction, Integrate, L2, LinearForm, VectorL2,
     cos, div, dx, exp, grad, pi, sin, specialcf, sqrt, x, y,
 )
 
@@ -149,3 +149,19 @@ def test_boundary_ds_on_given_facets():
     F = boundary_facets(mesh, D)[0]
     h = exp(x) * sin(3 * y)
     assert Integrate(h * boundary_ds(mesh, D, facets=F), mesh) == Integrate(h * boundary_ds(mesh, D), mesh)
+
+
+
+def test_nan_away_from_gamma_h_does_not_leak():
+    """boundary_ds does not evaluate the integrand on elements of D without a facet
+    on Gamma_h: a NaN there (e.g. grad phi = 0/0 at the centre of a disk, which
+    made the TPM matrix singular on a 13 x 13 quad mesh) must not reach the
+    integral as 0 * NaN."""
+    mesh = background_mesh(0.2)
+    D = unfitted_domain(mesh, GEOMETRIES["disk"])[0]
+    far = next(el.nr for el in mesh.Elements(VOL) if D[el.nr]
+               and all(D[e.nr] for v in el.vertices for e in mesh[v].elements))   # no facet on Gamma_h
+    c = GridFunction(L2(mesh, order=0))
+    c.vec[:] = 1.0
+    c.vec[far] = float("nan")
+    assert np.isfinite(Integrate(c * boundary_ds(mesh, D), mesh))

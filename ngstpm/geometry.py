@@ -112,12 +112,26 @@ def _interior_facets(mesh, inner):
 
 class _FacetMeasure:
     """One-sided integral over some facets of an element set D, seen from D:
-    dx(element_boundary=True, definedonelements=D, **kw) with the indicator of
-    the facets multiplied into the integrand. `cf * measure` is an ordinary
-    SumOfIntegrals; `measure(**kw)` returns the measure with more options."""
+    dx(element_boundary=True, definedonelements=E, **kw) with the indicator of
+    the facets multiplied into the integrand, E the elements of D with a marked
+    facet (the integrand is never evaluated on the other elements of D, where
+    0 * NaN would still be NaN). `cf * measure` is an ordinary SumOfIntegrals;
+    `measure(**kw)` returns the measure with more options."""
 
     def __init__(self, D, ind, kw):
         self.D, self.ind, self.kw = D, ind, kw
+
+    @classmethod
+    def on(cls, mesh, D, facets, kw):
+        """The measure of the facets (BitArray) seen from the elements of D."""
+        E = BitArray(mesh.ne)
+        E.Clear()
+        for f in mesh.facets:
+            if facets[f.nr]:
+                for el in f.elements:
+                    if D[el.nr]:
+                        E[el.nr] = True
+        return cls(E, _facet_indicator(mesh, facets), kw)
 
     def __call__(self, **kw):
         return _FacetMeasure(self.D, self.ind, {**self.kw, **kw})
@@ -158,7 +172,7 @@ def interior_ds(mesh, D=None, **kw):
     interior_ds(mesh, D)(bonus_intorder=b). D=None: the whole mesh.
     """
     D = whole_mesh(mesh) if D is None else D
-    return _FacetMeasure(D, _facet_indicator(mesh, _interior_facets(mesh, D)), kw)
+    return _FacetMeasure.on(mesh, D, _interior_facets(mesh, D), kw)
 
 
 def boundary_ds(mesh, D=None, facets=None, **kw):
@@ -178,8 +192,8 @@ def boundary_ds(mesh, D=None, facets=None, **kw):
     """
     D = whole_mesh(mesh) if D is None else D
     if facets is not None:
-        return _FacetMeasure(D, _facet_indicator(mesh, facet_set(mesh, facets)), kw)
-    return _FacetMeasure(D, boundary_facets(mesh, D)[1], kw)
+        return _FacetMeasure.on(mesh, D, facet_set(mesh, facets), kw)
+    return _FacetMeasure.on(mesh, D, boundary_facets(mesh, D)[0], kw)
 
 
 _cf_mul = CoefficientFunction.__mul__
