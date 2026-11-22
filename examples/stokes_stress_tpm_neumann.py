@@ -25,8 +25,10 @@ import stokes_stress as st
 from stokes_stress_tpm import eoc_line, mean_difference
 
 
-def solve(mesh, order, mu, f, g, gN, phi, tau=1.0, prune=False):
-    """g: the velocity on the box (CF); gN(X, Y): the stress at xbar (2x2 CF).
+def solve(mesh, order, mu, f, g, gN, phi, tau=1.0, prune=False, convect=None, factor=None):
+    """g: the velocity on the box (CF); gN(X, Y): the stress at xbar (2x2 CF);
+    convect(lhs, trial, test, D): added terms (oseen_stress_tpm.py); factor: as in
+    stokes_stress.finish.
     Returns (sigma_h, u_h, gamma_h, uhat_h, ustar_h), p_h and D."""
     D = unfitted_domain(mesh, phi)[0]
     if prune:
@@ -37,13 +39,15 @@ def solve(mesh, order, mu, f, g, gN, phi, tau=1.0, prune=False):
 
     fes, top, lhs, rhs, trial, test, sigmahat_n = st.forms(mesh, order, mu, f, ".*", tau, D,
                                                            constrained=False)
+    if convect is not None:
+        convect(lhs, trial, test, D)
     sP, u, uhat = trial[0], trial[3], trial[5]
     muh = test[5]
     lhs += sigmahat_n * muh * interior_ds(mesh, D)
     lhs += (sP.Extrapolate(xbar) * nubar - tau * mu * (u - uhat)) * muh * dB
     rhs += gN(*xbar) * nubar * muh * dB
     sol, p_h, _ = st.finish(lhs, rhs, fes, top, (g, BND, mesh.Boundaries(".*")), mesh, order, mu,
-                            D, constrained=False)
+                            D, constrained=False, factor=factor)
     return sol, p_h, D
 
 

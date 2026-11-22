@@ -84,6 +84,6 @@ def test_bordered_solve(k, monkeypatch):
     mesh = MakeStructured2DMesh(quads=False, nx=4, ny=4)
     e1, m1, _ = run(mesh, k, 1.0, U, P)
     monkeypatch.setattr(stokes_stress, "multiplier_inverse",
-                        lambda fes, rho, m: (lambda mat, free: mat.Inverse(free)))
+                        lambda fes, rho, m, factor=None: (lambda mat, free: mat.Inverse(free)))
     e2, m2, _ = run(mesh, k, 1.0, U, P)
     assert max(abs(a / b - 1) for a, b in zip(e1, e2)) < 1e-10 and abs(m1 - m2) < 1e-12

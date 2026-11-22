@@ -38,8 +38,10 @@ def face_coordinate(mesh):
     return 2 * ((x - mx) * (-n[1]) + (y - my) * n[0]) / ln
 
 
-def divergence_free(mesh, order, mu, sigma_h, u_h, gamma_h, uhat_h, D=None):
-    """u** (HDiv(k+1) GridFunction on the elements of D) from the HDG solution."""
+def divergence_free(mesh, order, mu, sigma_h, u_h, gamma_h, uhat_h, D=None, factor=None):
+    """u** (HDiv(k+1) GridFunction on the elements of D) from the HDG solution; factor(mat,
+    free): the factorization of the element systems (default UMFPACK, which leaks at each
+    call; superlu.inverse in the Picard loop)."""
     on = (lambda V: V) if D is None else (lambda V: restrict(V, D))
     k = order
     n = specialcf.normal(2)
@@ -83,7 +85,8 @@ def divergence_free(mesh, order, mu, sigma_h, u_h, gamma_h, uhat_h, D=None):
     lhs.Assemble()
     rhs.Assemble()
     sol = GridFunction(fes)
-    sol.vec.data = lhs.mat.Inverse(free, inverse="umfpack") * rhs.vec
+    inv = lhs.mat.Inverse(free, inverse="umfpack") if factor is None else factor(lhs.mat, free)
+    sol.vec.data = inv * rhs.vec
     ustar = GridFunction(on(HDiv(mesh, order=k + 1)))
     ustar.Set(sol.components[0], dual=True, definedonelements=D)
     ustar.l2 = sol.components[0]                     # the element solution, for checks
@@ -108,3 +111,19 @@ def checks(mesh, ustar, D=None):
     j = sqrt(2 * InnerProduct(r, Mr))
     diff = sqrt(Integrate(InnerProduct(ustar - u, ustar - u) * dV, mesh))
     return np.sqrt(d2.max()), np.sqrt(d2.sum()), j, diff
+
+
+def corrected_beta(mesh, ustar, m_h, D=None):
+    """beta = u** + (m_h/2)(x - x_c) in the space of u** (HDiv(k+1)), x_c the centroid of D_h:
+    div beta = div u** + m_h = 0 on transferred boundaries (decision 21 (A)); beta = u**
+    when m_h is None or 0."""
+    beta = GridFunction(ustar.space)
+    beta.vec.data = ustar.vec
+    if m_h:
+        dV = dx(definedonelements=D)
+        area = Integrate(CF(1) * dV, mesh)
+        xc, yc = (Integrate(c * dV, mesh) / area for c in (x, y))
+        shift = GridFunction(ustar.space)
+        shift.Set(m_h / 2 * CF((x - xc, y - yc)), dual=True, definedonelements=D)
+        beta.vec.data += shift.vec
+    return beta

@@ -72,12 +72,13 @@ def add_constraint(lhs, trial, test, D=None):
     lhs += (m * psi + rho * q) * dx(definedonelements=D)
 
 
-def finish(lhs, rhs, fes, top, uhat_bc, mesh, order, mu, D=None, constrained=True):
+def finish(lhs, rhs, fes, top, uhat_bc, mesh, order, mu, D=None, constrained=True, factor=None):
     """Solve with uhat = uhat_bc on the Dirichlet faces; returns (sigma_h, u_h, gamma_h,
-    uhat_h, ustar_h), p_h and m_h (None if not constrained)."""
+    uhat_h, ustar_h), p_h and m_h (None if not constrained). factor(mat, free): the sparse
+    factorization (default None: mat.Inverse(free), UMFPACK; superlu.inverse for Picard)."""
     gfu = GridFunction(fes)
     gfu.components[5].Set(*uhat_bc)
-    inverse = multiplier_inverse(fes, 7, 8) if constrained else None
+    inverse = multiplier_inverse(fes, 7, 8, factor) if constrained else factor
     solve_linear_system(lhs, rhs, gfu, free_dofs(fes, top, True), inverse)
     sP_h, w1_h, w2_h, u_h, gam_h, uhat_h = gfu.components[:6]
     u_h.gfu = gfu                                       # the whole solution, for study_io
@@ -87,20 +88,22 @@ def finish(lhs, rhs, fes, top, uhat_bc, mesh, order, mu, D=None, constrained=Tru
     return (sigma_h, u_h, gam_h, uhat_h, ustar_h), -Trace(sigma_h) / 2, m_h
 
 
-def multiplier_inverse(fes, rho, m):
+def multiplier_inverse(fes, rho, m, factor=None):
     """inverse(mat, free) for solve_linear_system when the zero-mean multiplier m (first dof
     of component m) is in the system: the sparse factorization is of the condensed matrix
     without m and without one element mean of tr(sigma) (first free dof of component rho,
     which pins the constant pressure mode); these two unknowns are recovered from their
     2 x 2 Schur complement (BorderedInverse). The dense row and column of m then never enter
-    the factorization; the solution is that of the whole system."""
+    the factorization; the solution is that of the whole system. factor(mat, free): the
+    factorization of the reduced matrix (default mat.Inverse(free), UMFPACK)."""
     def inverse(mat, free):
         rho0 = next(d for d in range(fes.Range(rho).start, fes.Range(rho).stop) if free[d])
         removed = (fes.Range(m).start, rho0)
         reduced = BitArray(free)
         for d in removed:
             reduced[d] = False
-        return BorderedInverse(mat, mat.Inverse(reduced), removed)
+        Ainv = mat.Inverse(reduced) if factor is None else factor(mat, reduced)
+        return BorderedInverse(mat, Ainv, removed)
     return inverse
 
 

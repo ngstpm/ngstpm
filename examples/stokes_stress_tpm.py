@@ -31,14 +31,19 @@ import stokes_stress as st
 INF = float("inf")
 
 
-def solve(mesh, order, mu, f, g, phi, D=None, tau=1.0, dirichlet=".*", full=True):
+def solve(mesh, order, mu, f, g, phi, D=None, tau=1.0, dirichlet=".*", full=True, convect=None,
+          factor=None):
     """g(X, Y): the velocity on Gamma (vector CF); dirichlet: the fitted part of the mesh
-    boundary. Returns (sigma_h, u_h, gamma_h, uhat_h, ustar_h), p_h, m_h and D."""
+    boundary; convect(lhs, trial, test, D): added terms (oseen_stress_tpm.py); factor: as in
+    stokes_stress.finish.
+    Returns (sigma_h, u_h, gamma_h, uhat_h, ustar_h), p_h, m_h and D."""
     D = unfitted_domain(mesh, phi)[0] if D is None else D
     p = transfer_paths(mesh, phi, D, order=order + 4)                 # x -> p.target on Gamma
     dB = gamma_ds(mesh, D, bonus_intorder=max(6, 2 * order))         # Gamma_h
 
     fes, top, lhs, rhs, trial, test, sigmahat_n = st.forms(mesh, order, mu, f, dirichlet, tau, D)
+    if convect is not None:
+        convect(lhs, trial, test, D)
     sP, w1, w2, u, gam, uhat = trial[:6]
     muh = test[5]
     lhs += sigmahat_n * muh * interior_ds(mesh, D)
@@ -47,7 +52,7 @@ def solve(mesh, order, mu, f, g, phi, D=None, tau=1.0, dirichlet=".*", full=True
     rhs += g(*p.target) * muh * dB
     st.add_constraint(lhs, trial, test, D)
     bc = (g(x, y), BND, mesh.Boundaries(dirichlet))
-    return (*st.finish(lhs, rhs, fes, top, bc, mesh, order, mu, D), D)
+    return (*st.finish(lhs, rhs, fes, top, bc, mesh, order, mu, D, factor=factor), D)
 
 
 def mean_difference(mesh, p, p_h, D):

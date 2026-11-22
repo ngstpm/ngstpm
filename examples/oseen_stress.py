@@ -41,37 +41,59 @@ from ngsolve import *
 from stokes_stress import COLUMNS, HEADER, P, U, add_constraint, errors, finish, forms
 
 
-def stabilization(mesh, beta, mu, order):
-    """S = mu + max |beta . n|/2 over the Gauss points of the edges, with MATLAB's rule:
-    max(ceil((k_beta + 2 k)/2), 1) + 1 points per edge, k_beta = k for a given field
-    (convective_matrix.m:37, 42, 63, get_1d_reference_quadrature.m:15)."""
-    s, _ = np.polynomial.legendre.leggauss(max((3 * order + 1) // 2, 1) + 1)
-    s = (s + 1) / 2
-    ends = np.array([[mesh.vertices[v.nr].point for v in e.vertices] for e in mesh.edges])
-    a, t = ends[:, 0], ends[:, 1] - ends[:, 0]
-    n = np.stack((t[:, 1], -t[:, 0]), axis=1) / np.linalg.norm(t, axis=1)[:, None]
-    pts = a[:, None, :] + s[None, :, None] * t[:, None, :]            # edges x points x 2
-    b = beta(mesh(pts[..., 0].ravel(), pts[..., 1].ravel())).reshape(pts.shape)
-    return mu + np.abs(np.einsum("epi,ei->ep", b, n)).max() / 2
+def edge_points(order, beta):
+    """MATLAB's Gauss points on [0, 1] for the faces: max(ceil((k_beta + 2 k)/2), 1) + 1
+    points, k_beta = k for a given field and k + 1 for a discrete beta (u** in P_{k+1})
+    (convective_matrix.m:37-42, 63, get_1d_reference_quadrature.m:15)."""
+    kb = order + 1 if isinstance(beta, GridFunction) else order
+    s, _ = np.polynomial.legendre.leggauss(max(-(-(kb + 2 * order) // 2), 1) + 1)
+    return (s + 1) / 2
 
 
-def convection(lhs, trial, test, beta, skip=None):
+def stabilization(mesh, beta, mu, order, D=None):
+    """S = mu + max |beta . n|/2 over the Gauss points of the edges (of the elements of D),
+    edge_points (MATLAB's rule).
+    beta is evaluated on each element of D at the points of its own edges, so that a
+    GridFunction restricted to D (zero outside, divfree.py) is read from the inside on
+    Gamma_h."""
+    s = edge_points(order, beta)
+    ref = np.array([[1, 0], [0, 1], [0, 0], [1, 0]])                   # reference triangle
+    ir = IntegrationRule([tuple(ref[i] + si * (ref[i + 1] - ref[i])) for i in range(3) for si in s],
+                         [1] * (3 * len(s)))
+    pts = mesh.MapToAllElements(ir, VOL)
+    keep = slice(None) if D is None else np.array(list(D), dtype=bool)
+    shape = (mesh.ne, 3, len(s), 2)                                   # elements x edges x points
+    X = CF((x, y))(pts).reshape(shape)[keep]
+    b = beta(pts).reshape(shape)[keep]
+    t = X[:, :, -1] - X[:, :, 0]
+    n = np.stack((t[..., 1], -t[..., 0]), axis=-1) / np.linalg.norm(t, axis=-1)[..., None]
+    return mu + np.abs(np.einsum("eqpi,eqi->eqp", b, n)).max() / 2
+
+
+def convection(lhs, trial, test, beta, skip=None, D=None):
     """-(u x beta, grad v)_K + <(beta . n) uhat, v>_dK - <(beta . n) uhat, mu>_dK; the
     last is zero on interior faces when beta . n is single valued (then skip only acts on
     the boundary; it matters on interior faces when beta . n jumps), and is dropped on the
     faces where the facet function skip is 1 (do-nothing, MATLAB skip_faces).
-    bonus_intorder=2 for beta of degree <= 2 (the patch and manufactured beta are linear)."""
+    Quadrature: NGSolve takes the order from the elements, not from beta. The space of
+    stokes_stress.forms has bubble components of degree k + 2, so the element order is
+    2 (k + 2) + bonus; with bonus_intorder=2 the terms beta . P_k . P_k (degree up to 3k + 1
+    for beta = u** in P_{k+1}) are integrated exactly for k <= 4 (checked,
+    agentB-tables/goal4-stage3-quadrature.txt). Without the bubbles (VectorL2(k) x
+    Facet(k)) the same bonus is inexact from k = 3 on."""
     n = specialcf.normal(2)
     u, uhat, v, muh = trial[3], trial[5], test[3], test[5]
     bn = beta * n
     keep = 1 if skip is None else 1 - skip
-    lhs += -InnerProduct(OuterProduct(u, beta), grad(v)) * dx(bonus_intorder=2)
-    lhs += bn * uhat * (v - keep * muh) * dx(element_boundary=True, bonus_intorder=2)
+    lhs += -InnerProduct(OuterProduct(u, beta), grad(v)) * dx(bonus_intorder=2, definedonelements=D)
+    lhs += bn * uhat * (v - keep * muh) * dx(element_boundary=True, bonus_intorder=2,
+                                              definedonelements=D)
 
 
-def solve(mesh, order, mu, f, g, beta, gN=None, dirichlet=".*", stab="global"):
+def solve(mesh, order, mu, f, g, beta, gN=None, dirichlet=".*", stab="global", factor=None):
     """Returns (sigma_h, u_h, gamma_h, uhat_h, ustar_h), p_h, m_h (None with a traction
-    boundary) and S (the constant, or None for stab="pointwise")."""
+    boundary) and S (the constant, or None for stab="pointwise"); factor: as in
+    stokes_stress.finish."""
     constrained = gN is None
     S = stabilization(mesh, beta, mu, order) if stab == "global" else None
     tau = S / mu if S is not None else 1 + Norm(beta * specialcf.normal(2)) / (2 * mu)
@@ -89,7 +111,7 @@ def solve(mesh, order, mu, f, g, beta, gN=None, dirichlet=".*", stab="global"):
     if constrained:
         add_constraint(lhs, trial, test)
     sol, p_h, m_h = finish(lhs, rhs, fes, top, (g, BND, mesh.Boundaries(dirichlet)), mesh, order,
-                           mu, constrained=constrained)
+                           mu, constrained=constrained, factor=factor)
     return sol, p_h, m_h, S
 
 
