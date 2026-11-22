@@ -3,8 +3,8 @@
 import itertools
 
 import numpy as np
-from ngsolve import (CF, Discontinuous, FacetFESpace, Grad, GridFunction, IfPos, InnerProduct, L2, VOL,
-                     specialcf, sqrt, x, y, z)
+from ngsolve import (CF, Discontinuous, ElementId, FacetFESpace, Grad, GridFunction, IfPos, InnerProduct,
+                     L2, Parameter, VOL, specialcf, sqrt, x, y, z)
 
 from ._ngstpm import SideEval
 from .geometry import boundary_facets, facet_set, whole_mesh
@@ -16,6 +16,8 @@ def _floor(v, eps=1e-12):
 
 LEVEL_SET_KINDS = ("quasi-normal", "facet-normal", "vertical")   # the kinds a level set (a callable) supports
 ORDER = 6                                               # default degree of the ell, sigma fields
+SPREAD = 0.1                                            # the faces' nodes reach this far beyond their ends (pair looks there)
+CHECK = 0.05                                            # largest |phi(target)| / |grad phi| allowed, in element sizes
 
 
 class TransferPath:
@@ -39,13 +41,16 @@ class TransferPath:
     evaluated there as g(*p.target) (a vector CF unpacks into its components).
     """
 
-    def __init__(self, mesh, elements, facets, geo, kind, ell, sigma, target, target_normal, grad_d=None):
+    def __init__(self, mesh, elements, facets, geo, kind, ell, sigma, target, target_normal, grad_d=None,
+                 residual=None):
         self.mesh, self.elements, self.facets, self.geo, self.kind = mesh, elements, facets, geo, kind
         self.ell, self.sigma, self.target, self.target_normal = ell, sigma, target, target_normal
         self.grad_d = grad_d
+        self.residual = residual        # "quasi-normal": distance of the targets to Gamma, see transfer_paths
 
 
-def transfer_paths(mesh, geo, D=None, *, kind=None, order=ORDER, facets=None):
+def transfer_paths(mesh, geo, D=None, *, kind=None, order=ORDER, facets=None, tol=1e-12, maxit=50,
+                   check=True):
     """The TransferPath of the element set D (one side) to Gamma.
 
     geo: a level set phi (callable of the coordinate CFs, Gamma = {phi = 0}),
@@ -53,7 +58,10 @@ def transfer_paths(mesh, geo, D=None, *, kind=None, order=ORDER, facets=None):
     kind: how sigma is chosen; geo.kinds (LEVEL_SET_KINDS for a level set)
     lists the supported ones, the first is the default:
       "quasi-normal"  sigma = grad phi / |grad phi| at x, ell by Newton on
-                      phi(x + ell sigma) = 0 (level sets);
+                      phi(x + ell sigma) = 0 (level sets), pointwise at nodes of
+                      the faces of Gamma_h, to the tolerance tol (a distance, in
+                      element sizes; or to rounding) in at most maxit steps, or a
+                      RuntimeError is raised. phi must depend on its arguments only;
       "closest"       the path ends at the closest point of Gamma, sigma is the
                       normal of Gamma there (explicit geometries; h below the
                       reach of Gamma);
@@ -72,6 +80,11 @@ def transfer_paths(mesh, geo, D=None, *, kind=None, order=ORDER, facets=None):
     faces between an element of D and one outside D), or a boundary Region. Pass
     it when Gamma_h is part of the mesh boundary, e.g. mesh.Boundaries("interface")
     on the mesh of one side (two meshes).
+    check ("quasi-normal"): the fields ell, sigma fit the pointwise paths on the
+    faces of each element; p.residual is the largest distance |phi| / |grad phi|
+    of a target to Gamma, over the faces of Gamma_h, in units of the size of the
+    element. A RuntimeError is raised if it exceeds CHECK (check=True), or the
+    number given as check; check=False only stores it.
     """
     D = whole_mesh(mesh) if D is None else D
     facets = boundary_facets(mesh, D)[0] if facets is None else facet_set(mesh, facets)
@@ -79,8 +92,17 @@ def transfer_paths(mesh, geo, D=None, *, kind=None, order=ORDER, facets=None):
     kind = kinds[0] if kind is None else kind
     if kind not in kinds:
         raise ValueError(f"kind {kind!r} not supported by this geometry; supported: {kinds}")
+    residual = None
     if kind == "closest":
         ell, sigma, grad_d = _closest_point_paths(mesh, geo, D, order, facets=facets)
+    elif kind == "quasi-normal":
+        ray = _Ray(mesh, geo, tol, maxit)
+        ell, sigma, grad_d = _closest_point_paths(mesh, ray, D, order, facets=facets, spread=SPREAD)
+        residual = _target_residual(mesh, ray, D, facets, ell, sigma, order)
+        limit = CHECK if check is True else check
+        if limit is not False and limit is not None and residual > limit:
+            raise RuntimeError(f"transfer_paths: the targets are off Gamma by {residual:.1e} element sizes "
+                               f"(allowed: {limit:.1e}); refine the mesh, raise order or pass check=False")
     else:
         ell, sigma, grad_d = _level_set_paths(mesh, geo, D, order, kind=kind)
     side = lambda cf: SideEval(cf, None, mesh, D)          # on this side's element (or its partner)
@@ -89,7 +111,96 @@ def transfer_paths(mesh, geo, D=None, *, kind=None, order=ORDER, facets=None):
     # on the partner of an interface measure the path ends at the integration point's xbar
     target = SideEval(side(CF((x, y, z)[:mesh.dim])) + ell * sigma, None, mesh, D, path_end=True)
     nbar = sigma if kind == "closest" else normal(geo, *target)
-    return TransferPath(mesh, D, facets, geo, kind, ell, sigma, target, nbar, grad_d)
+    return TransferPath(mesh, D, facets, geo, kind, ell, sigma, target, nbar, grad_d, residual)
+
+
+class _Ray:
+    """The pointwise quasi-normal paths of a level set, in the form _closest_point_paths
+    fits: closest(X) returns the ends of the rays from the points X along
+    sigma = grad phi / |grad phi| at X, and sigma."""
+
+    def __init__(self, mesh, phi, tol, maxit, delta=1e-6):
+        self.dim, self.tol, self.maxit, self.delta = mesh.dim, tol, maxit, delta
+        args = [Parameter(0.0) for _ in range(mesh.dim)]
+        cf = phi(*args)
+        self._trafo = mesh.GetTrafo(ElementId(VOL, 0))      # kept: the mapped points refer to it
+        mip = self._trafo(*([1 / (mesh.dim + 1)] * mesh.dim))
+
+        def one(P):                             # any callable of the coordinate CFs, a point at a time
+            for a, v in zip(args, P):
+                a.Set(float(v))
+            return cf(mip)
+        self.phi = lambda P: np.array([one(Pi) for Pi in P])
+        # phi is evaluated at the values of its arguments, wherever the point is: it must
+        # not depend on the point itself (x, y, z, a GridFunction, ...)
+        centre = np.array(mip.point)[:mesh.dim]
+        other = self._trafo(*([0.1] * mesh.dim))
+        for P in (centre, centre + 0.37):
+            v = one(P)
+            if cf(other) != v and not (np.isnan(v) and np.isnan(cf(other))):
+                raise ValueError("transfer_paths: the level set must depend on its arguments only, "
+                                 "phi(X, Y) -> CF of X, Y (not of x, y, z or of a GridFunction)")
+
+    def grad(self, P):
+        delta = self.delta * max(1.0, np.abs(P).max())             # relative to the size of the coordinates
+        return np.column_stack([(self.phi(P + ei) - self.phi(P - ei)) / (2 * delta) for ei in delta * np.eye(self.dim)])
+
+    def distance(self, P):
+        """|phi| / |grad phi| at the points P."""
+        return np.abs(self.phi(P)) / np.maximum(np.linalg.norm(self.grad(P), axis=1), 1e-300)
+
+    def closest(self, X):
+        g = self.grad(X)
+        norm = np.linalg.norm(g, axis=1)
+        if norm.min() < 1e-12:
+            raise RuntimeError(f"transfer_paths: grad phi vanishes at {X[norm.argmin()]} on Gamma_h")
+        s = g / norm[:, None]
+        ell = -self.phi(X) / norm
+        h = np.linalg.norm(X.max(axis=0) - X.min(axis=0))          # size of the faces of the element
+        last = np.full(len(X), np.inf)
+        for _ in range(self.maxit):
+            P = X + ell[:, None] * s
+            r, d = self.phi(P), np.sum(self.grad(P) * s, axis=1)
+            bad = np.abs(d) < 1e-12 * norm
+            if bad.any():
+                raise RuntimeError(f"transfer_paths: the ray from {X[bad.argmax()]} is tangent to a level set of phi")
+            step = np.abs(r / d)
+            # converged: to the tolerance, or to rounding (a tiny step that no longer decreases)
+            far = (step > self.tol * h) & ~((step <= 1e-6 * h) & (step >= 0.5 * last))
+            if not far.any():
+                return P, s
+            ell, last = ell - r / d, step
+        raise RuntimeError(f"transfer_paths: Newton did not converge in {self.maxit} steps at {far.sum()} of "
+                           f"{len(X)} points of an element, e.g. from {X[far.argmax()]}")
+
+
+def _target_residual(mesh, ray, inner, facets, ell, sigma, order):
+    """Largest distance to Gamma of the targets x + ell sigma of the fitted fields, at
+    Gauss points of the faces of Gamma_h, in units of the element size (affine elements)."""
+    d = mesh.dim
+    verts = np.array([v.point for v in mesh.vertices])
+    n = order + 3
+    if d == 2:
+        t = 0.5 * (np.polynomial.legendre.leggauss(n)[0] + 1)
+        lam = np.column_stack((t, 1 - t))
+    else:
+        lam = np.array([(i, j, n - i - j) for i in range(1, n) for j in range(1, n - i)]) / n
+    worst = 0.0
+    ref = [np.zeros(d)] + list(np.eye(d))
+    for el in mesh.Elements(VOL):
+        if not inner[el.nr]:
+            continue
+        faces = [f for f in el.facets if facets[f.nr]]
+        if not faces:
+            continue
+        trafo = mesh.GetTrafo(el)
+        p0, *pi = (np.array(trafo(*xi).point) for xi in ref)
+        M = np.column_stack([q - p0 for q in pi])
+        X = np.vstack([lam @ verts[[v.nr for v in mesh[f].vertices]] for f in faces])
+        mips = [trafo(*np.linalg.solve(M, Xi - p0)) for Xi in X]
+        target = X + np.array([ell(m) * np.array(sigma(m)) for m in mips])
+        worst = max(worst, ray.distance(target).max() / np.linalg.norm(M, axis=0).max())
+    return worst
 
 
 def _level_set_paths(mesh, phi, inner, degree, newton_steps=4, delta=1e-6, kind="quasi-normal"):
@@ -158,11 +269,14 @@ def _grad_d(ell, comps):
     return CF(tuple(rows), dims=(len(comps), len(comps)))
 
 
-def _closest_point_paths(mesh, geo, inner, order, facets=None):
+def _closest_point_paths(mesh, geo, inner, order, facets=None, spread=0.0):
     """ell, sigma (and grad_d) as elementwise P_order GridFunctions, fitted (least squares
     of minimal norm: only the traces count) to the closest-point data at
     nodes on the facets of Gamma_h: those where an element of inner meets an
-    element outside inner or, if given, the facets of the BitArray facets."""
+    element outside inner or, if given, the facets of the BitArray facets.
+    spread (2D): the nodes cover the line of each facet from -spread to
+    1 + spread (in facet lengths), so that the fields are also meaningful a
+    little beyond its ends."""
     d = mesh.dim
     verts = np.array([v.point for v in mesh.vertices])
     els = [el for el in mesh.Elements(VOL) if inner[el.nr]]
@@ -175,6 +289,7 @@ def _closest_point_paths(mesh, geo, inner, order, facets=None):
     n = order + 2
     if d == 2:
         t = 0.5 * (np.polynomial.legendre.leggauss(n)[0] + 1)
+        t = -spread + (1 + 2 * spread) * t          # nodes also on the line of the face, beyond its ends
         lam = np.column_stack((t, 1 - t))
     else:
         lam = np.array([(i, j, n - i - j) for i in range(n + 1) for j in range(n + 1 - i)]) / n

@@ -162,3 +162,58 @@ def test_9_vertical_area(maxh):
         area = (Integrate(CF(1) * dx(definedonelements=D), mesh)
                 + Integrate(CF(1).RegionIntegral(p) * I.ds(side=i + 1), mesh))
         assert abs(area - 0.5) < 1e-9
+
+
+def kidney(X, Y):
+    r2 = (X + 0.5) ** 2 + Y * Y
+    return (2 * r2 - (X + 0.5)) ** 2 - r2 + 0.1
+
+
+@pytest.mark.parametrize("maxh,bound", [(0.2, 5e-2), (0.1, 2e-3), (0.05, 2e-5)])
+def test_quasi_normal_targets_on_gamma(maxh, bound):
+    """Pointwise Newton on the faces of Gamma_h: also where the level set has a critical
+    point next to Gamma_h (the kidney at maxh = 0.2, where the fields projected over the
+    whole element left the targets off Gamma by more than an element size). Observed
+    residuals (element sizes): 1.4e-2, 4.5e-4, 2.4e-6."""
+    from ngstpm import unfitted_domain
+    mesh = background_mesh(maxh)
+    p = transfer_paths(mesh, kidney, unfitted_domain(mesh, kidney)[0])
+    assert p.residual < bound
+
+
+def test_quasi_normal_raises():
+    from ngstpm import unfitted_domain
+    mesh = background_mesh(0.3)
+    D = unfitted_domain(mesh, disk)[0]
+    with pytest.raises(RuntimeError, match="Newton did not converge|tangent|vanishes"):
+        transfer_paths(mesh, lambda X, Y: 1 + X * X + 0 * Y, D)       # no zero along the rays
+    with pytest.raises(RuntimeError, match="off Gamma"):
+        transfer_paths(mesh, disk, D, order=1, check=1e-9)            # a fit too coarse for the check
+    assert transfer_paths(mesh, disk, D, order=1, check=False).residual > 1e-9
+
+
+def test_level_set_of_its_arguments_only():
+    """A level set that reads the point (x, y) instead of its arguments raises; it used to
+    be evaluated at a freed mapped point (segmentation fault)."""
+    from ngstpm import unfitted_domain
+    mesh = background_mesh(0.3)
+    D = unfitted_domain(mesh, disk)[0]
+    with pytest.raises(ValueError, match="arguments only"):
+        transfer_paths(mesh, lambda X, Y: sqrt(X * X + Y * Y) - 1 - 0.3 * x, D)
+
+
+@pytest.mark.parametrize("c", [100.0, 1000.0])
+def test_quasi_normal_shifted_circle(c):
+    """Far from the origin the rounding of phi exceeds an absolute tolerance: Newton
+    stops at rounding. Unit circle centred at (c, c), expanded (the worst conditioned form)."""
+    from netgen.geom2d import SplineGeometry
+    from ngsolve import Mesh
+    from ngstpm import unfitted_domain
+    geo = SplineGeometry()
+    geo.AddRectangle((c - 1.3, c - 1.3), (c + 1.3, c + 1.3))
+    mesh = Mesh(geo.GenerateMesh(maxh=0.2))
+    phi = lambda X, Y: X * X - 2 * c * X + Y * Y - 2 * c * Y + 2 * c * c - 1
+    D = unfitted_domain(mesh, phi)[0]
+    assert 50 < D.NumSet() < mesh.ne
+    p = transfer_paths(mesh, phi, D)
+    assert p.residual < 1e-6            # observed: 2.1e-8 (c = 100), 4.5e-8 (c = 1000); 3.3e-9 at c = 0
