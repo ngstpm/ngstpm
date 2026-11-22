@@ -53,7 +53,7 @@ from darcy_tpm import inverse
 from poisson import solve_linear_system
 from convergence import coefficients, main
 from stokes import multiplier_inverse, shifted, stokes_data
-from ngstpm import boundary_ds, interior_ds, normal, pair, transfer_paths
+from ngstpm import boundary_ds, interior_ds, normal, pair, restrict, transfer_paths
 
 
 def meshes(n, hanging=False, delta=0.0):
@@ -78,26 +78,39 @@ def at(cf, X):
 
 
 def solve(mesh1, mesh2, order, phi, data, nu=1.0, kappa=CF((1, 0, 0, 1), dims=(2, 2)), omega=1.0, tau=1.0,
-          darcy_dirichlet=None, condense=True):
+          darcy_dirichlet=None, condense=True, D1=None, D2=None, paths=None):
     """data: dict of CFs f_s, g (u_s on Gamma_s), f_d, u_d (its normal component is gN),
     p_d (the Dirichlet datum), T_mass, T_force. darcy_dirichlet: boundary names of mesh 2
     with p_d = data["p_d"] (None: Darcy all Neumann; then rho and alpha are active).
+    D1, D2: the element sets of Stokes and Darcy (None: the whole mesh, Gamma_h its boundary
+    "interface"); mesh1 is mesh2 is one mesh with two subdomains.
+    paths: called as transfer_paths (mesh, phi, D or facets=...) to build each side's paths
+    (None: transfer_paths).
     Returns (L_s, u_s, P_s, uhat_s, u_d, p_d, phat_d), rho, alpha (0, 0 without the level)."""
     level = darcy_dirichlet is None
-    p1 = transfer_paths(mesh1, phi, facets=mesh1.Boundaries("interface"))   # Stokes: all of mesh 1
-    p2 = transfer_paths(mesh2, phi, facets=mesh2.Boundaries("interface"))   # Darcy: all of mesh 2
+    transfer_paths_ = transfer_paths if paths is None else paths
+    sets = []
+    for mesh, D in ((mesh1, D1), (mesh2, D2)):
+        if D is None:
+            path = transfer_paths_(mesh, phi, facets=mesh.Boundaries("interface"))  # all of the mesh
+            D, side = path.elements, lambda F: F
+        else:
+            path, side = transfer_paths_(mesh, phi, D), lambda F, D=D: restrict(F, D)
+        sets.append((path, D, side))
+    (p1, D1, side1), (p2, D2, side2) = sets
     I = pair(p1, p2)                                                  # common subdivision of the interface
     bonus = max(6, 2 * order)
     dI = [I.ds(side=i, bonus_intorder=bonus) for i in (1, 2)]
 
-    fes1 = (MatrixValued(L2(mesh1, order=order)) * VectorL2(mesh1, order=order)
-            * L2(mesh1, order=order, lowest_order_wb=True)                  # element means of p stay global
-            * FacetFESpace(mesh1, order=order, dirichlet="outer") ** 2)
+    spaces1 = [side1(MatrixValued(L2(mesh1, order=order))), side1(VectorL2(mesh1, order=order)),
+               side1(L2(mesh1, order=order, lowest_order_wb=True)),        # element means of p stay global
+               side1(FacetFESpace(mesh1, order=order, dirichlet="outer")) ** 2]   # restrict(F**2) drops dirichlet
     if level:
-        fes1 = fes1 * NumberSpace(mesh1) * NumberSpace(mesh1)               # rho, alpha
-    fes2 = (VectorL2(mesh2, order=order) * L2(mesh2, order=order)
-            * FacetFESpace(mesh2, order=order, **({"dirichlet": darcy_dirichlet} if darcy_dirichlet else {})))
-    fes = I.Space(fes1, fes2)
+        spaces1 += [NumberSpace(mesh1), NumberSpace(mesh1)]                 # rho, alpha
+    spaces2 = [side2(VectorL2(mesh2, order=order)), side2(L2(mesh2, order=order)),
+               side2(FacetFESpace(mesh2, order=order, **({"dirichlet": darcy_dirichlet} if darcy_dirichlet else {})))]
+    fes1 = FESpace(spaces1)
+    fes = FESpace(spaces1 + spaces2) if mesh1 is mesh2 else I.Space(fes1, FESpace(spaces2))
     trial, test = fes.TnT()
     (L, u, ph, uhat), (G, v, q, mu) = trial[:4], test[:4]
     ud, pd, pdhat = trial[-3:]
@@ -111,23 +124,24 @@ def solve(mesh1, mesh2, order, phi, data, nu=1.0, kappa=CF((1, 0, 0, 1), dims=(2
     # Stokes: the HDG of stokes.py
     div_G = fem.Einsum("ijj->i", grad(G))                             # row-wise: (div G)_i = d_j G_ij
     sigmahat_n = nu * L * n - ph * n - tau * nu * (u - uhat)
-    dS1 = dx(element_boundary=True)
-    lhs += InnerProduct(L, G) * dx + u * div_G * dx - uhat * (G * n) * dS1
-    lhs += nu * InnerProduct(L, grad(v)) * dx - ph * Trace(grad(v)) * dx - sigmahat_n * v * dS1
-    rhs += data["f_s"] * v * dx
-    lhs += -u * grad(q) * dx + (uhat * n) * q * dS1
-    lhs += sigmahat_n * mu * interior_ds(mesh1)
+    dV1, dS1 = dx(definedonelements=D1), dx(element_boundary=True, definedonelements=D1)
+    lhs += InnerProduct(L, G) * dV1 + u * div_G * dV1 - uhat * (G * n) * dS1
+    lhs += nu * InnerProduct(L, grad(v)) * dV1 - ph * Trace(grad(v)) * dV1 - sigmahat_n * v * dS1
+    rhs += data["f_s"] * v * dV1
+    lhs += -u * grad(q) * dV1 + (uhat * n) * q * dS1
+    lhs += sigmahat_n * mu * interior_ds(mesh1, D1)
 
     # Darcy: the HDG of darcy.py
     uhat_n = ud * n + tau * (pd - pdhat)
-    lhs += kappa_inv * ud * vd * dx - pd * div(vd) * dx + pdhat * (vd * n) * dS1
-    lhs += -ud * grad(qd) * dx + uhat_n * qd * dS1
-    rhs += data["f_d"] * qd * dx
-    lhs += uhat_n * mud * interior_ds(mesh2)
+    dV2, dS2 = dx(definedonelements=D2), dx(element_boundary=True, definedonelements=D2)
+    lhs += kappa_inv * ud * vd * dV2 - pd * div(vd) * dV2 + pdhat * (vd * n) * dS2
+    lhs += -ud * grad(qd) * dV2 + uhat_n * qd * dS2
+    rhs += data["f_d"] * qd * dV2
+    lhs += uhat_n * mud * interior_ds(mesh2, D2)
     neumann = "bottom|outer" if darcy_dirichlet is None else \
         "|".join(b for b in ("bottom", "outer") if b not in darcy_dirichlet.split("|"))
     if neumann:
-        dN = boundary_ds(mesh2, facets=mesh2.Boundaries(neumann))
+        dN = boundary_ds(mesh2, D2, facets=mesh2.Boundaries(neumann))
         lhs += uhat_n * mud * dN
         rhs += (data["u_d"] * n) * mud * dN
 
@@ -151,14 +165,15 @@ def solve(mesh1, mesh2, order, phi, data, nu=1.0, kappa=CF((1, 0, 0, 1), dims=(2
     if level:
         rho, alpha = trial[4], trial[5]
         rho_, alpha_ = test[4], test[5]
-        lhs += ph * rho_ * dx + rho * q * dx                          # (ptilde_s, 1)_{Omega_h^s} = 0
-        lhs += alpha * alpha_ * dx + (ph + alpha).RegionIntegral(p1) * alpha_ * dI[0]
+        lhs += ph * rho_ * dV1 + rho * q * dV1                        # (ptilde_s, 1)_{Omega_h^s} = 0
+        lhs += alpha * alpha_ * dV1 + (ph + alpha).RegionIntegral(p1) * alpha_ * dI[0]
 
     gfu = I.GridFunction(fes)
     gfu.components[3].Set(data["g"], definedon=mesh1.Boundaries("outer"))
     if darcy_dirichlet:
         gfu.components[-1].Set(data["p_d"], definedon=mesh2.Boundaries(darcy_dirichlet))
-    solve_linear_system(lhs, rhs, gfu, inverse=multiplier_inverse(fes1) if level else "umfpack")
+    solver = multiplier_inverse(fes if mesh1 is mesh2 else fes1) if level else "umfpack"   # Stokes dofs first
+    solve_linear_system(lhs, rhs, gfu, inverse=solver)
 
     c = gfu.components
     rho, alpha = (c[4].vec[0], c[5].vec[0]) if level else (0.0, 0.0)
@@ -191,12 +206,20 @@ def paper_data():
     return stokes_darcy_data(u_s, P_s, p_d, phi)
 
 
-def errors(mesh1, mesh2, sol, data):
-    """|L_s - L_s,h|, |u_s - u_s,h|, |P_s - P_s,h|, |u_d - u_d,h|, |p_d - p_d,h|."""
-    pairs = ((mesh1, sol[0], data["L_s"]), (mesh1, sol[1], data["u_s"]), (mesh1, sol[2], data["P_s"]),
-             (mesh2, sol[4], data["u_d"]), (mesh2, sol[5], data["p_d"]))
-    return [sqrt(Integrate(InnerProduct(a - b, a - b), mesh, order=14))
-            for mesh, a, b in pairs]
+def norm(mesh, f, D=None):
+    """The L2 norm of the CF f over mesh, or over its element set D (the same quadrature, order 14)."""
+    if D is None:
+        return sqrt(Integrate(InnerProduct(f, f), mesh, order=14))
+    e = np.array(Integrate(InnerProduct(f, f), mesh, order=14, element_wise=True))
+    return sqrt(e[np.array(list(D), dtype=bool)].sum())
+
+
+def errors(mesh1, mesh2, sol, data, D1=None, D2=None):
+    """|L_s - L_s,h|, |u_s - u_s,h|, |P_s - P_s,h|, |u_d - u_d,h|, |p_d - p_d,h| over mesh 1, mesh 2
+    or over the element sets D1, D2 of them (None: the whole mesh)."""
+    pairs = ((mesh1, D1, sol[0], data["L_s"]), (mesh1, D1, sol[1], data["u_s"]), (mesh1, D1, sol[2], data["P_s"]),
+             (mesh2, D2, sol[4], data["u_d"]), (mesh2, D2, sol[5], data["p_d"]))
+    return [norm(mesh, a - b, D) for mesh, D, a, b in pairs]
 
 
 DELTA = {"0": lambda h: 0.0, "h74": lambda h: h ** 1.75, "h": lambda h: h}   # h = 1/n, the Stokes mesh size

@@ -3,7 +3,7 @@ from math import log2
 from pathlib import Path
 
 import pytest
-from ngsolve import CF, InnerProduct, Integrate, x, y
+from ngsolve import CF, InnerProduct, Integrate, dx, x, y
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "examples"))
 from stokes_darcy import DELTA, errors, meshes, paper_data, phi, solve, stokes_darcy_data  # noqa: E402
@@ -95,3 +95,16 @@ def test_convergence_rate_gap(k, hanging):
         errs.append(errors(mesh1, mesh2, sol, data))
     for e0, e1 in zip(*errs):
         assert log2(e0 / e1) > k + 1 - 0.15
+
+
+def test_polynomial_reproduced_exactly_one_mesh():
+    """One mesh of the unit square with the internal line y = 1/2: Stokes and Darcy on the
+    element sets above and below (zero-length paths), the level active."""
+    from stokes_interface import square_mesh
+    data = polynomial_data()
+    mesh, D1, D2 = square_mesh(0.25)
+    sol, _, _ = solve(mesh, mesh, 2, phi, data, nu=NU, kappa=KAPPA, omega=OMEGA, tau=TAU, D1=D1, D2=D2)
+    pairs = ((D1, sol[0], data["L_s"]), (D1, sol[1], data["u_s"]), (D1, sol[2], data["P_s"]),
+             (D2, sol[4], data["u_d"]), (D2, sol[5], data["p_d"]))
+    for D, a, b in pairs:
+        assert Integrate(InnerProduct(a - b, a - b) * dx(definedonelements=D), mesh) ** 0.5 < 1e-10
