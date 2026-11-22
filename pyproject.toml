@@ -15,7 +15,7 @@ classifiers = [
 
 [project.optional-dependencies]
 test = ["pytest"]
-examples = ["matplotlib"]
+examples = ["matplotlib", "scipy"]
 
 [tool.scikit-build]
 wheel.packages = ["ngstpm"]
@@ -30,7 +30,7 @@ testpaths = ["tests"]
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
 skip = "*-musllinux_* *_i686 *-win32"
-test-requires = ["pytest"]
+test-requires = ["pytest", "scipy"]
 test-command = "pytest {project}/tests -q"
 
 [tool.cibuildwheel.linux]
