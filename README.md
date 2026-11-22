@@ -205,7 +205,7 @@ ax = plot(uh, p, extend=True, gradient=-qh, cmap="jet")   # q = -grad u
 
 ```
 python examples/poisson.py              # fitted HDG, unit square
-python examples/poisson_tpm.py          # Dirichlet: disk, flower, annulus, square with a hole
+python examples/poisson_tpm.py          # Dirichlet: disk, flower, annulus, square with a hole, kidney
 python examples/poisson_tpm_draw.py     # draws u_h on each of them with plot() (needs matplotlib)
 python examples/poisson_tpm_RT.py       # the same with mixed Raviart-Thomas instead of HDG
 python examples/poisson_tpm_quads.py    # HDG, HDG-Q[k] (enriched flux) and RT on quadrilaterals

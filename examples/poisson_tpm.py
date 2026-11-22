@@ -11,7 +11,7 @@ transfer path p (q = -grad u, so uhat.Transfer(p, gradient=-q)).
 Where Omega reaches the boundary of the background mesh, that part of the
 boundary is fitted and u = g is imposed there as in poisson.py.
 
-Works in 2D and 3D; the geometries below are simply connected (disk, flower),
+Works in 2D and 3D; the geometries below are simply connected (disk, flower, kidney),
 multiply connected (annulus) and partly fitted (square with a hole).
 """
 
@@ -72,6 +72,7 @@ GEOMETRIES = {
     "flower": lambda X, Y: sqrt(X*X + Y*Y) - 1 - 0.12 * cos(5 * atan2(Y, X)),
     "annulus": lambda X, Y: (sqrt(X*X + Y*Y) - 0.75)**2 - 0.25**2,       # 0.5 < r < 1
     "square with a hole": lambda X, Y: 0.6 - sqrt(X*X + Y*Y),            # (-1.3, 1.3)^2, r > 0.6
+    "kidney": lambda X, Y: (2*((X+0.5)**2 + Y**2) - (X+0.5))**2 - (X+0.5)**2 - Y**2 + 0.1,
 }
 
 
