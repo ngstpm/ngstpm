@@ -14,7 +14,7 @@ def _floor(v, eps=1e-12):
     return IfPos(v - eps, v, eps)
 
 
-LEVEL_SET_KINDS = ("quasi-normal", "facet-normal")      # the kinds a level set (a callable) supports
+LEVEL_SET_KINDS = ("quasi-normal", "facet-normal", "vertical")   # the kinds a level set (a callable) supports
 ORDER = 6                                               # default degree of the ell, sigma fields
 
 
@@ -59,6 +59,13 @@ def transfer_paths(mesh, geo, D=None, *, kind=None, order=ORDER, facets=None):
                       reach of Gamma);
       "facet-normal"  sigma = the outward facet normal (level sets). Legacy, not
                       for computing: on unfitted meshes these paths can miss Gamma.
+      "vertical"      sigma = +-e_d (the last coordinate direction), the sign of
+                      d phi / d x_d at x (from Omega_1 to Omega_2), ell by the same
+                      Newton (level sets; MATLAB's SmoothCurveHorizontal
+                      mapping="vertical"); target_normal is still the normal of
+                      Gamma at the target. It assumes Gamma is a graph over
+                      x_1..x_{d-1} and d phi / d x_d keeps its sign on each
+                      element of Gamma_h (not checked).
     order: polynomial degree of the elementwise fields ell, sigma.
     D: element BitArray (default: the whole mesh).
     facets: facet BitArray of Gamma_h (default: boundary_facets(mesh, D), the
@@ -94,6 +101,9 @@ def _level_set_paths(mesh, phi, inner, degree, newton_steps=4, delta=1e-6, kind=
     elementwise GridFunctions on inner (projecting each iterate keeps the CF
     trees small).
 
+    "vertical": sigma = sign(d phi / d x_d) e_d at x, ell by the same Newton from
+    -phi / |d phi / d x_d|.
+
     "facet-normal" (legacy, not for computing: on unfitted meshes the normal
     lines of staircase facets can miss Gamma, and Newton then returns an xbar
     off Gamma): sigma = the outward facet normal of the element
@@ -121,8 +131,12 @@ def _level_set_paths(mesh, phi, inner, degree, newton_steps=4, delta=1e-6, kind=
     grad = [p.Diff(Xi) for Xi in X]
     norm = _floor(sqrt(sum(gi * gi for gi in grad)))
     comps = [GridFunction(V) for _ in X]
-    for c, gi in zip(comps, grad):
-        c.Set(gi / norm, definedonelements=inner)
+    if kind == "vertical":
+        comps[-1].Set(IfPos(grad[-1], 1.0, -1.0), definedonelements=inner)
+        norm = _floor(IfPos(grad[-1], grad[-1], -grad[-1]))      # |d phi / d x_d|: Newton's start
+    else:
+        for c, gi in zip(comps, grad):
+            c.Set(gi / norm, definedonelements=inner)
     sigma = CF(tuple(comps))
 
     def phi_at(ell):

@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from netgen.csg import CSGeometry, OrthoBrick, Pnt
-from ngsolve import CF, Integrate, Mesh, Norm, cos, dx, pi, sin, sqrt, x, y
+from ngsolve import BND, CF, Integrate, Mesh, Norm, cos, dx, pi, sin, sqrt, x, y
 
 from ngstpm import (BSplineCurve, ParametricCurve, PointCloud, boundary_ds, pair, snapped_domains,
                     transfer_paths, unfitted_domain)
@@ -234,3 +234,95 @@ def test_interface_disk_matches_level_set(family, ref):
     sol = itf.solve(mesh, 2, geo, D1, D2, *KAPPA_CF, k1 * 2 * pi**2 * u1(x, y), CF(0.0),
                     lambda X, Y: u1(X, Y) - u2(X, Y), lambda X, Y: q1(X, Y) - q2(X, Y), u2(x, y))
     assert itf.errors(mesh, sol, D1, D2, u1, u2, q1, q2)[0] == pytest.approx(ref, rel=1e-3)
+
+
+def wave(X, Y):                         # y = 0.5 + 0.05 sin(2 pi x), crosses the sides x = 0, 1 obliquely
+    return 0.5 + 0.05 * sin(2 * pi * X) - Y
+
+
+def unit_square(maxh):
+    from netgen.geom2d import SplineGeometry
+    geo = SplineGeometry()
+    geo.AddRectangle((0, 0), (1, 1), bc="outer")
+    return Mesh(geo.GenerateMesh(maxh=maxh))
+
+
+@pytest.mark.parametrize("maxh", [0.2, 0.05])
+def test_snapped_boundary_vertices_stay_on_their_edge(maxh):
+    """A moved vertex on a side of the square stays on it and lands on Gamma (Newton along the side)."""
+    mesh = unit_square(maxh)
+    snapped, _, _ = snapped_domains(mesh, wave)
+    V0 = np.array([v.point for v in mesh.vertices])
+    V1 = np.array([v.point for v in snapped.vertices])
+    side = (V0[:, 0] == 0) | (V0[:, 0] == 1)
+    moved = np.any(V0 != V1, axis=1)
+    assert np.sum(side & moved) >= 2
+    assert np.array_equal(V0[side, 0], V1[side, 0])
+    Y = 0.5 + 0.05 * np.sin(2 * np.pi * V1[side & moved, 0])
+    assert np.max(np.abs(V1[side & moved, 1] - Y)) < 1e-14
+
+
+def test_snapped_interior_unchanged():
+    """With no cut element at the mesh boundary every moved vertex is the plain Newton projection
+    along grad phi (4 steps), bit for bit, and no boundary vertex moves."""
+    mesh = itf.background_mesh(0.3)
+    snapped, _, _ = snapped_domains(mesh, disk)
+    p = disk(x, y)
+    grad = CF((p.Diff(x), p.Diff(y)))
+    vals = [p(mesh(*v.point)) for v in mesh.vertices]
+    cut = set()
+    for el in mesh.Elements():
+        s = [vals[v.nr] < 0 for v in el.vertices]
+        if any(s) and not all(s):
+            cut.update(v.nr for v in el.vertices)
+    assert cut
+    for v0, v1 in zip(mesh.vertices, snapped.vertices):
+        c = np.array(v0.point)
+        if v0.nr in cut:
+            for _ in range(4):
+                mp = mesh(*c)
+                g = np.array(grad(mp))
+                c = c - p(mp) * g / g.dot(g)
+        assert np.array_equal(c, np.array(v1.point))
+
+
+def test_snapped_gamma_parallel_to_the_boundary():
+    """Gamma = {y = 0.05} parallel to the bottom: no tangential gradient there, so the vertices take
+    the unconstrained Newton step (as before the boundary treatment) and land on Gamma."""
+    mesh = unit_square(0.2)
+    snapped, _, _ = snapped_domains(mesh, lambda X, Y: 0.05 - Y)
+    V0 = np.array([v.point for v in mesh.vertices])
+    V1 = np.array([v.point for v in snapped.vertices])
+    moved = np.any(V0 != V1, axis=1)
+    assert moved.sum() > 0 and not np.isnan(V1).any()
+    assert np.max(np.abs(V1[moved, 1] - 0.05)) < 1e-14 and np.array_equal(V0[moved, 0], V1[moved, 0])
+
+
+def test_snapped_curved_boundary():
+    """On the polygon of the unit disk the boundary vertices of cut elements slide along the mean
+    tangent onto Gamma (not frozen as corners); they leave the circle by O(h * step); the elements
+    of D1, D2 keep a positive area."""
+    from netgen.geom2d import SplineGeometry
+    geo = SplineGeometry()
+    geo.AddCircle((0, 0), 1, bc="outer")
+    mesh = Mesh(geo.GenerateMesh(maxh=0.2))
+    line = lambda X, Y: 0.1 + 0.3 * X - Y
+    snapped, D1, D2 = snapped_domains(mesh, line)
+    V0 = np.array([v.point for v in mesh.vertices])
+    V1 = np.array([v.point for v in snapped.vertices])
+    bnd = {v.nr for el in mesh.Elements(BND) for v in el.vertices}
+    vals = line(V0[:, 0], V0[:, 1])
+    cut = set()
+    for el in mesh.Elements():
+        s = [vals[v.nr] < 0 for v in el.vertices]
+        if any(s) and not all(s):
+            cut.update(v.nr for v in el.vertices)
+    on = sorted(cut & bnd)
+    assert len(on) >= 2
+    assert np.all(np.any(V0[on] != V1[on], axis=1))
+    assert np.max(np.abs(line(V1[on, 0], V1[on, 1]))) < 1e-12
+    assert np.max(np.abs(np.hypot(V1[on, 0], V1[on, 1]) - 1)) < 0.05
+    for el in snapped.Elements():
+        if D1[el.nr] or D2[el.nr]:
+            a, b, c = V1[[v.nr for v in el.vertices]]
+            assert (b - a)[0] * (c - a)[1] - (b - a)[1] * (c - a)[0] > 0

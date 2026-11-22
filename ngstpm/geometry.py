@@ -1,8 +1,9 @@
 """Interior subdomain D_h of a level-set domain on a background mesh."""
 
 import numpy as np
-from ngsolve import (CF, BitArray, CoefficientFunction, Compress, FacetFESpace, GridFunction, Mesh,
-                     VOL, dx, x, y, z)
+from netgen.libngpy._meshing import NgException
+from ngsolve import (BND, CF, BitArray, CoefficientFunction, Compress, FacetFESpace, GridFunction, Mesh,
+                     Parameter, VOL, dx, x, y, z)
 from ngsolve.comp import Region
 
 
@@ -36,6 +37,10 @@ def _vertex_values(mesh, phi):
     return [p(mesh(*v.point)) for v in mesh.vertices]
 
 
+CORNER_ANGLE = 30.0     # degrees: a boundary vertex where the boundary turns by more is a corner
+PARALLEL = 0.1          # |projected grad phi| / |grad phi| below which a boundary vertex moves freely
+
+
 def snapped_domains(mesh, phi, newton_steps=4):
     """Snap a background mesh onto Gamma = {phi = 0}.
 
@@ -44,7 +49,23 @@ def snapped_domains(mesh, phi, newton_steps=4):
     elements that were entirely in {phi < 0}) and D_h^2 (those in {phi > 0}):
     the gap between them is O(h^2) instead of O(h), and Gamma_h^1, Gamma_h^2
     do not match. Elements left with all their vertices on Gamma are dropped
-    from D_h^i. Returns (mesh, D1, D2), with the new mesh.
+    from D_h^i. A moved vertex on the mesh boundary stays on it: Newton runs
+    along the boundary (the step projected on its tangent space at the vertex,
+    with the gradient of the signed distance, the normal of the closest point,
+    for an explicit geometry, whose closest() must return normals). The
+    tangent space is that of the mean of the boundary normals at the vertex; a
+    vertex where the boundary turns by more than CORNER_ANGLE (30 degrees) is a
+    corner, with no tangent direction. On a polygon approximating a curved boundary the
+    vertex slides along the mean tangent and leaves the polygon by O(h * step)
+    (there phi is evaluated from the coordinates alone: phi must depend on its
+    arguments only).
+    Where Gamma is nearly parallel to the boundary (the projected gradient below
+    PARALLEL = 0.1 of |grad phi|, i.e. within 5.7 degrees, so that the step
+    along the boundary would be more than 10 times the distance to Gamma), and
+    at a corner, the vertex takes the unconstrained step of an interior vertex,
+    as before this boundary treatment, and leaves the boundary. Newton along the boundary is not stopped at a corner: a step may
+    overshoot past it (not handled).
+    Returns (mesh, D1, D2), with the new mesh.
     """
     explicit = hasattr(phi, "closest")
     vals = _vertex_values(mesh, phi)
@@ -59,9 +80,37 @@ def snapped_domains(mesh, phi, newton_steps=4):
         D2[el.nr] = all(vals[v.nr] > 0 for v in el.vertices)
         if not (D1[el.nr] or D2[el.nr]):
             moved.update(v.nr for v in el.vertices)
+    tangents = _boundary_tangents(mesh, moved)
     ngmesh = mesh.ngmesh.Copy()
+    def value_and_gradient(c):
+        if explicit:
+            return phi.signed_distance(c[None])[0], phi.closest(c[None])[1][0]
+        mp = mesh(*c)
+        try:
+            return p(mp), np.array(grad(mp))
+        except NgException:             # slid off a polygonal boundary: phi of the coordinates alone
+            return outside(c)
+
+    def outside(c):
+        args = [Parameter(float(ci)) for ci in c]
+        q = phi(*args)
+        mp = mesh(*mesh.vertices[0].point)
+        return q(mp), np.array([q.Diff(a)(mp) for a in args])
+
     for i, pt in enumerate(ngmesh.Points()):
-        if i in moved:
+        slide = i in tangents and len(tangents[i]) > 0
+        if slide:
+            c, T = np.array(mesh.vertices[i].point), tangents[i]
+            g = value_and_gradient(c)[1]
+            slide = np.linalg.norm(T @ g) >= PARALLEL * np.linalg.norm(g)
+        if slide:
+            for _ in range(newton_steps):
+                f, g = value_and_gradient(c)
+                g = T.T @ (T @ g)                                 # along the boundary
+                c = c - f * g / g.dot(g)
+            for j in range(mesh.dim):
+                pt[j] = c[j]
+        elif i in moved:
             c = np.array(mesh.vertices[i].point)
             if explicit:
                 c = phi.closest(c[None])[0][0]
@@ -76,6 +125,32 @@ def snapped_domains(mesh, phi, newton_steps=4):
         if all(v.nr in moved for v in el.vertices):
             D1[el.nr] = D2[el.nr] = False
     return snapped, D1, D2
+
+
+def _boundary_tangents(mesh, vertices):
+    """For the given vertices that lie on the mesh boundary: an orthonormal basis
+    (rows) of the tangent space of the boundary there, the complement of the
+    directions spanned by the normals of its boundary elements at the vertex.
+    A direction counts when its singular value exceeds tan(CORNER_ANGLE / 2)
+    times the largest (two unit normals at angle t have singular values
+    sqrt(1 +- cos t), ratio tan(t / 2)); so a boundary turning by less than
+    CORNER_ANGLE gives the tangent space of the mean normal, and a corner
+    gives no rows."""
+    normals = {}
+    for el in mesh.Elements(BND):
+        vs = [v.nr for v in el.vertices]
+        if not vertices.intersection(vs):
+            continue
+        P = np.array([mesh.vertices[v].point for v in vs])
+        n = (np.array([P[1, 1] - P[0, 1], P[0, 0] - P[1, 0]]) if mesh.dim == 2
+             else np.cross(P[1] - P[0], P[2] - P[0]))
+        for v in vertices.intersection(vs):
+            normals.setdefault(v, []).append(n / np.linalg.norm(n))
+    tangents = {}
+    for v, N in normals.items():
+        _, S, Vt = np.linalg.svd(np.array(N))
+        tangents[v] = Vt[np.sum(S > np.tan(np.radians(CORNER_ANGLE) / 2) * S[0]):]
+    return tangents
 
 
 def boundary_facets(mesh, inner):

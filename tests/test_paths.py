@@ -122,3 +122,43 @@ def test_7_facets():
 def bnd_ind(mesh, F):
     from ngstpm.geometry import _facet_indicator
     return _facet_indicator(mesh, F)
+
+
+def wave(X, Y):                         # the graph y = 0.5 + 0.05 sin(2 pi x) in the unit square
+    from ngsolve import pi, sin
+    return 0.5 + 0.05 * sin(2 * pi * X) - Y
+
+
+@pytest.mark.parametrize("side", [1, 2])
+def test_8_vertical(side):
+    """kind="vertical": sigma = (0, -1) (the sign of d phi/dy, from Omega_1 to Omega_2) on both
+    sides, so the path keeps x; the target is on Gamma and target_normal is the normal of Gamma."""
+    from stokes_darcy_curved import square
+    mesh = square(0.1)
+    D = unfitted_domain(mesh, wave, side=side)[0]
+    p = transfer_paths(mesh, wave, D, kind="vertical")
+    assert p.kind == "vertical"
+    assert gamma_h_mean(mesh, D, p.sigma[0] ** 2 + (p.sigma[1] + 1) ** 2) < 1e-28     # sigma_2: L2 projection of -1
+    assert gamma_h_mean(mesh, D, (p.target[0] - x) ** 2) == 0.0
+    assert (gamma_h_mean(mesh, D, p.ell) > 0) == (side == 1)
+    assert sqrt(gamma_h_mean(mesh, D, wave(*p.target) ** 2)) < 1e-10
+    from ngsolve import CF, cos, pi
+    gp = 0.1 * pi * cos(2 * pi * p.target[0])                               # gamma'(x) at the target
+    exact = -CF((-gp, 1)) / sqrt(1 + gp * gp)                               # from Omega_1 (above) to Omega_2
+    assert sqrt(gamma_h_mean(mesh, D, (p.target_normal - exact) ** 2)) < 1e-8   # normal(): central differences
+
+
+@pytest.mark.parametrize("maxh", [0.1, 0.05])
+def test_9_vertical_area(maxh):
+    """|D_h^i| + the region swept by the vertical paths of each side = 1/2 on the unfitted mesh."""
+    from ngsolve import CF
+    from ngstpm import pair
+    from stokes_darcy_curved import square
+    mesh = square(maxh)
+    Ds = [unfitted_domain(mesh, wave, side=s)[0] for s in (1, 2)]
+    paths = [transfer_paths(mesh, wave, D, kind="vertical") for D in Ds]
+    I = pair(*paths)
+    for i, (D, p) in enumerate(zip(Ds, paths)):
+        area = (Integrate(CF(1) * dx(definedonelements=D), mesh)
+                + Integrate(CF(1).RegionIntegral(p) * I.ds(side=i + 1), mesh))
+        assert abs(area - 0.5) < 1e-9

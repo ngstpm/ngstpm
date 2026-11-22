@@ -8,7 +8,7 @@ along Gamma whose vertices lie on Gamma (straight elements), with the same inter
 two polygons leave a gap of width O(h^2) with overlaps; the paths of each side end on Gamma.
 
 Snapped family ("snapped"): one netgen mesh of the unit square snapped onto Gamma
-(snapped_domains; the vertices on the sides x = 0, 1 slide along them, see SnapTarget), Stokes on
+(snapped_domains; the vertices on the sides x = 0, 1 slide along them onto Gamma), Stokes on
 D1, Darcy on D2, both sides' unknowns on the one mesh (solve with mesh1 is mesh2); the slivers
 between D1 and D2 leave a gap of width O(h^2) with overlaps; errors are integrated over D1, D2.
 On maxh 0.2, 0.1, 0.05, 0.025 all of L, u_s, P_s, u_d, p_d converge with order k+1 (last EOC:
@@ -50,7 +50,7 @@ from ngsolve import *
 
 from convergence import coefficients, main
 from stokes_darcy import errors, norm, solve, stokes_darcy_data
-from ngstpm import boundary_facets, normal, snapped_domains, transfer_paths, unfitted_domain
+from ngstpm import boundary_facets, snapped_domains, transfer_paths, unfitted_domain
 
 
 def gamma(X):
@@ -94,31 +94,6 @@ def meshes(maxh, nonmatching=False):
     return tuple(out)
 
 
-class SnapTarget:
-    """Gamma as an explicit geometry for snapped_domains: signed_distance only gives the side
-    (phi, negative in Omega_s) and closest(X) the new position of a vertex of a cut element: the
-    Newton projection along grad phi that snapped_domains applies to a level set (4 steps), except
-    for a vertex on the sides x = 0, 1, which moves along its side to (x, gamma(x)). Newton along
-    grad phi would take it out of the square (the normal of Gamma is not horizontal there, and
-    snapped_domains fails with "Meshpoint not in mesh")."""
-
-    def signed_distance(self, X):
-        X = np.asarray(X, dtype=float)
-        return gamma(X[:, 0]) - X[:, 1]
-
-    def closest(self, X):
-        X = np.asarray(X, dtype=float)
-        P = X.copy()
-        for _ in range(4):
-            f = gamma(P[:, 0]) - P[:, 1]
-            g = np.stack([0.1 * np.pi * np.cos(2 * np.pi * P[:, 0]), -np.ones(len(P))], axis=1)
-            P -= (f / np.sum(g * g, axis=1))[:, None] * g
-        side = (X[:, 0] < 1e-12) | (X[:, 0] > 1 - 1e-12)
-        P[side, 0] = np.round(X[side, 0])
-        P[side, 1] = gamma(P[side, 0])
-        return P, None
-
-
 def square(maxh):
     """A netgen mesh of the unit square, boundaries "bottom" and "outer" (the other sides)."""
     geo = SplineGeometry()
@@ -131,7 +106,7 @@ def square(maxh):
 def snapped(maxh):
     """square(maxh) snapped onto Gamma: (mesh, D1, D2), D1 the Stokes elements (above), D2 the
     Darcy ones."""
-    return snapped_domains(square(maxh), SnapTarget())
+    return snapped_domains(square(maxh), phi)
 
 
 def unfitted(maxh, teeth=True):
@@ -159,28 +134,14 @@ def prune_teeth(mesh, D):
             D[i] = False
 
 
-class VerticalTarget:
-    """Gamma as an explicit geometry for transfer_paths(kind="closest"): X is mapped to
-    (X_1, gamma(X_1)) straight down or up, N = (0, -1) (from Omega_s to Omega_d), so the path of X is
-    vertical, as MATLAB's SmoothCurveHorizontal with its default mapping="vertical"
-    (src/dissimilar-coupling/geometry/curves/SmoothCurveHorizontal.m:9-10, 20, 58-59)."""
-
-    kinds = ("closest",)
-
-    def closest(self, X):
-        X = np.asarray(X, dtype=float)
-        return np.column_stack((X[:, 0], gamma(X[:, 0]))), np.tile([0.0, -1.0], (len(X), 1))
-
-
 def vertical_paths(mesh, geo, D=None, **kw):
-    """transfer_paths with vertical paths (VerticalTarget; geo is not used), and the target normal
-    that of Gamma at xbar, not the path direction (SmoothCurveHorizontal.m:89-94). The library's
+    """transfer_paths(..., kind="vertical"): vertical paths, as MATLAB's SmoothCurveHorizontal with its
+    default mapping="vertical" (src/dissimilar-coupling/geometry/curves/SmoothCurveHorizontal.m:9-10,
+    20, 58-59), the target normal that of Gamma at xbar (SmoothCurveHorizontal.m:89-94). The
     quasi-normal paths do not work on the unfitted family: there the staircases of the two sides
     reach x = 0, 1 at different heights, the tilted paths of their end vertices reach Gamma on
     different sides of x = 0 (or 1), and pair rejects the unpaired end piece."""
-    p = transfer_paths(mesh, VerticalTarget(), D, kind="closest", **kw)
-    p.target_normal = normal(phi, *p.target)
-    return p
+    return transfer_paths(mesh, geo, D, kind="vertical", **kw)
 
 
 def curved_data():
