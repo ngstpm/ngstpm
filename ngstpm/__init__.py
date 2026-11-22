@@ -155,6 +155,9 @@ def _region_integral(self, path, order=None):
     trial, test, gfs, coefficients = Leaves(self)
     if test:
         raise TypeError("RegionIntegral: test functions are never extrapolated (trial functions only)")
+    if path.kind == "facet-normal":
+        raise NotImplementedError("RegionIntegral: not available for 'facet-normal' paths: they can miss Gamma "
+                                  "on unfitted meshes, and the swept area is then O(h) wrong")
     if path.grad_d is None:
         raise NotImplementedError(f"RegionIntegral: not available for {path.kind!r} paths")
     if order is None:

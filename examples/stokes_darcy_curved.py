@@ -153,9 +153,8 @@ def curved_data():
     return stokes_darcy_data(u_s, P_s, p_d, phi)
 
 
-# k = 3, maxh 0.025: 1.1 GB (snapped: 0.89 GB, unfitted: 0.77 GB). fitted-nonmatching starts at 0.1: at 0.2, pair rejects a piece of length 3e-11
-# at the end x = 0 of Gamma, where the two sides' paths end 3e-11 apart (default path order 6).
-MAXH = {"fitted-matching": (0.2, 0.1, 0.05, 0.025), "fitted-nonmatching": (0.1, 0.0707, 0.05, 0.0354, 0.025),
+# k = 3, maxh 0.025: 1.1 GB (snapped: 0.89 GB, unfitted: 0.77 GB) (fitted-nonmatching at 0.2 needs the pointwise quasi-normal paths of feat/elasticity-fsi).
+MAXH = {"fitted-matching": (0.2, 0.1, 0.05, 0.025), "fitted-nonmatching": (0.2, 0.1, 0.0707, 0.05, 0.0354, 0.025),
         "snapped": (0.2, 0.1, 0.05, 0.025),
         "unfitted": (0.2, 0.141, 0.1, 0.0707, 0.05, 0.0354, 0.025), "unfitted-noteeth": (0.2, 0.141, 0.1, 0.0707, 0.05, 0.0354, 0.025)}
 CASES = {case: {k: hs for k in (1, 2, 3)} for case, hs in MAXH.items()}

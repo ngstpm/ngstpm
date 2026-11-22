@@ -3,8 +3,8 @@
 import itertools
 
 import numpy as np
-from ngsolve import (CF, Discontinuous, ElementId, FacetFESpace, Grad, GridFunction, IfPos, InnerProduct,
-                     L2, Parameter, VOL, specialcf, sqrt, x, y, z)
+from ngsolve import (CF, Discontinuous, ElementId, FacetFESpace, Grad, GridFunction, Id, IfPos, InnerProduct,
+                     L2, OuterProduct, Parameter, VOL, specialcf, sqrt, x, y, z)
 
 from ._ngstpm import SideEval
 from .geometry import boundary_facets, facet_set, whole_mesh
@@ -31,8 +31,16 @@ class TransferPath:
     target   vector CF, the end x + ell sigma of the path, on Gamma;
     target_normal  unit normal of Gamma at target, from Omega_1 to Omega_2:
              normal(phi, *target) for a level set, sigma for closest-point paths.
-    grad_d   matrix CF, the gradient of d = ell sigma, (grad_d)_ij = d_j d_i (for
-             RegionIntegral); None for the legacy "facet-normal" kind.
+    grad_d   matrix CF, the surface gradient on Gamma_h of d = ell sigma,
+             grad d (I - n n^T), (grad d)_ij = d_j d_i, n the unit normal of the
+             face of Gamma_h (for RegionIntegral, whose Jacobian only sees
+             grad d acting on tangent vectors). Only the tangential part: it is
+             valid only at points of Gamma_h (facet integration points, where
+             specialcf.normal is the face normal), and it is NOT an extension of
+             grad d into the element or the patch (the normal part of grad d
+             would depend on how d is extended off Gamma_h; on volume points,
+             where specialcf.normal is 0, the CF is the plain product rule).
+             None for the legacy "facet-normal" kind.
     ell, sigma, grad_d and the start x of target are SideEval nodes: evaluated on
     the element of D at the integration point (an interface measure redirects
     them to the partner element).
@@ -263,10 +271,13 @@ def _level_set_paths(mesh, phi, inner, degree, newton_steps=4, delta=1e-6, kind=
 
 
 def _grad_d(ell, comps):
-    """The gradient of d = ell sigma, (grad d)_ij = d_j d_i, from the elementwise
-    GridFunctions ell and sigma_i (the product rule; no re-projection)."""
+    """The surface gradient on Gamma_h of d = ell sigma, grad d (I - n n^T),
+    (grad d)_ij = d_j d_i, from the elementwise GridFunctions ell and sigma_i (the
+    product rule; no re-projection), n = specialcf.normal (facet points only)."""
+    d = len(comps)
     rows = [c * Grad(ell) + ell * Grad(c) for c in comps]
-    return CF(tuple(rows), dims=(len(comps), len(comps)))
+    n = specialcf.normal(d)
+    return CF(tuple(rows), dims=(d, d)) * (Id(d) - OuterProduct(n, n))
 
 
 def _closest_point_paths(mesh, geo, inner, order, facets=None, spread=0.0):
@@ -276,7 +287,9 @@ def _closest_point_paths(mesh, geo, inner, order, facets=None, spread=0.0):
     element outside inner or, if given, the facets of the BitArray facets.
     spread (2D): the nodes cover the line of each facet from -spread to
     1 + spread (in facet lengths), so that the fields are also meaningful a
-    little beyond its ends."""
+    little beyond its ends. grad_d is the surface gradient on Gamma_h of the
+    fitted ell sigma (see TransferPath.grad_d): the fields are fitted on the faces
+    of Gamma_h only, so it is only meaningful there."""
     d = mesh.dim
     verts = np.array([v.point for v in mesh.vertices])
     els = [el for el in mesh.Elements(VOL) if inner[el.nr]]
