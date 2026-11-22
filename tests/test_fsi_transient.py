@@ -11,22 +11,32 @@ import fsi_transient as ft  # noqa: E402
 from component_bc import two_layer_mesh  # noqa: E402
 
 
-def march(k, data, h=0.3, dt=0.1, nsteps=4, start="euler", b0=0.0, monitor=None, **kw):
+def march(k, data, h=0.3, dt=0.1, nsteps=4, start="euler", b0=0.0, monitor=None, mat=None, **kw):
     mesh, DF, DS = two_layer_mesh(h)
-    return ft.run(mesh, DF, DS, k, mat=ft.material(b0=b0), dt=dt, nsteps=nsteps, start=start, monitor=monitor,
+    return ft.run(mesh, DF, DS, k, mat=mat if mat is not None else ft.material(b0=b0), dt=dt, nsteps=nsteps, start=start, monitor=monitor,
                   **data, **kw)
 
 
 # ---- B1: exactness (MATLAB tests/test_fsi_transient_polynomial.m) ----------------------------
 
-# Observed at maxh 0.3, dt 0.1, 4 steps, k = 2: worst of the 12 columns 2.3e-13 (b0 = 0 and 2).
-@pytest.mark.parametrize("b0", [0.0, 2.0])
-def test_exact_matlab_data(b0):
+# Observed at maxh 0.3, dt 0.1, 4 steps, k = 2: worst of the 12 columns 2.3e-13 (b0 = 0 and 2),
+# 1.2e-13 (rho = (2, 3)), 8.6e-14 (tau = (1, 2.5)). The non-unit densities rho_F = 2, rho_S = 3
+# catch a density dropped or swapped in the mass and history terms (rho_F dropped in the fluid
+# history, rho_S in the fluid mass: 4.5, 4.6). Exactness holds for any tau, so the tau = (1, 2.5)
+# case checks consistency only; that S_solid is carried is tested in test_hemodynamics.py.
+B1_CASES = {"b0=0": (ft.material(b0=0.0), (1.0, 1.0)), "b0=2": (ft.material(b0=2.0), (1.0, 1.0)),
+            "rho=(2,3),b0=1.5": (ft.material(rhoF=2.0, rhoS=3.0, b0=1.5), (1.0, 1.0)),
+            "rho=(2,3),b0=1.5,tau=(1,2.5)": (ft.material(rhoF=2.0, rhoS=3.0, b0=1.5), (1.0, 2.5))}
+
+
+@pytest.mark.parametrize("case", B1_CASES)
+def test_exact_matlab_data(case):
     """u_F = curl(x y (1 + t)), p = (x + y)(1 + t), eta = (x, y)(1 + t + t^2/2): Newmark exact for
     constant acceleration, backward Euler and CN for u linear in t; every step, every column.
     Euler start then CN: two factorizations, theta = 1 at step 1 only."""
+    mat, tau = B1_CASES[case]
     worst = []
-    r = march(2, ft.matlab_polynomial(), b0=b0, monitor=lambda r: worst.append(max(r.errors(r.exact))))
+    r = march(2, ft.matlab_polynomial(), mat=mat, tau=tau, monitor=lambda r: worst.append(max(r.errors(r.exact))))
     assert len(worst) == 4 and max(worst) < 1e-9
     assert r.factorizations == 2 and r.thetas == [1.0, 0.5, 0.5, 0.5]
 
@@ -63,6 +73,7 @@ def test_kinematic_row_is_velocity_match():
 
 def test_superlu_equals_umfpack():
     """Same dof vector after 3 steps with SuperLU and UMFPACK (B2 data, k = 2)."""
+    pytest.importorskip("scipy")                 # superlu.py needs scipy (not a declared dependency)
     a, b = (march(2, ft.from_rest(2), dt=0.1, nsteps=3, b0=2.0, solver=s).U.FV().NumPy().copy()
             for s in ("umfpack", "superlu"))
     assert np.abs(a - b).max() < 1e-10 * max(1.0, np.abs(a).max())

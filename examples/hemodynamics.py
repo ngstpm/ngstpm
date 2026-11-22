@@ -18,7 +18,7 @@ unfitted-hdg/.claude/JOURNAL.md:2174-2206). Boundary table (52), component by co
 
 The time loop (theta-scheme fluid with one backward-Euler step, Newmark(1/4, 1/2) solid, the
 kinematic row on the solid faces) is fsi_transient.FSITransient unchanged; this file only adds
-the mesh, the data, the table and MATLAB's three profiles at the snapshot steps
+the mesh, the data, the table and MATLAB's three profiles at t = 4, 8, 12 ms
 (hemodynamics.m:1094-1135, 656-667):
 
     flow:         (2/3) uhat_x on the symmetry faces at s = 0.15, 0.5, 0.85 of each face (the trace);
@@ -63,8 +63,13 @@ TABLE_F = {"inflow": (NEUMANN, DIRICHLET), "outflow": (NEUMANN, DIRICHLET), "sym
 TABLE_S = {"top": (DIRICHLET, NEUMANN), "wall_in": (DIRICHLET, DIRICHLET), "wall_out": (DIRICHLET, DIRICHLET)}
 MU_F = 0.035
 MATERIAL = dict(mu_F=MU_F, rho_F=1.0, lam_S=1.7e6, mu_S=0.575e6, rho_S=1.1, b0=4e6)
-SNAPSHOTS = (40, 80, 120)                                            # steps of 4, 8, 12 ms at dt = 1e-4
+SNAPSHOT_TIMES = (4e-3, 8e-3, 12e-3)                                 # the profiles at 4, 8, 12 ms
 PROFILES = ("flow", "pressure", "displacement")
+
+
+def snapshot_steps(dt, times=SNAPSHOT_TIMES):
+    """The step numbers of the snapshot times at the time step dt (40, 80, 120 at dt = 1e-4)."""
+    return tuple(round(s / dt) for s in times)
 
 
 def p_in(time=t):
@@ -167,11 +172,14 @@ def profiles(run):
 
 # ---- the benchmark run ----------------------------------------------------------------------
 
-def benchmark(maxh=0.1, order=2, dt=1e-4, nsteps=120, snapshots=SNAPSHOTS, mat=MATERIAL, S_solid=1.0,
+def benchmark(maxh=0.1, order=2, dt=1e-4, nsteps=120, snapshots=None, mat=MATERIAL, S_solid=1.0,
               solver="umfpack", log=print):
-    """March nsteps from rest; at each snapshot step the three profiles, and the pressure profile
-    of the step before (for the two-step average). Returns (run, snaps, rss, timing):
-    snaps[step] = dict of profiles (+ "pressure_prev"), rss = RSS (MB) after every step."""
+    """March nsteps from rest; at each snapshot step (default snapshot_steps(dt)) the three
+    profiles, and the pressure profile of the step before (for the two-step average). Returns
+    (run, snaps, rss, timing): snaps[step] = dict of profiles (+ "pressure_prev"), rss = RSS (MB)
+    after every step."""
+    if snapshots is None:
+        snapshots = snapshot_steps(dt)
     t0 = clock.time()
     run = setup(maxh, order, dt, mat, S_solid, solver)
     t_setup = clock.time() - t0
@@ -204,12 +212,13 @@ def benchmark(maxh=0.1, order=2, dt=1e-4, nsteps=120, snapshots=SNAPSHOTS, mat=M
 
 
 def save_run(path, run, snaps, rss, timing, params):
-    """PATH.npz: the profiles (double precision) per snapshot, the parameters (JSON), the dof
-    vector of each snapshot state, the RSS per step; the mesh as PATH_mesh.vol.gz."""
+    """PATH.npz: the profiles (double precision) per snapshot step, the snapshot steps and times,
+    the parameters (JSON), the dof vector of each snapshot state, the RSS per step; the mesh as
+    PATH_mesh.vol.gz."""
     from study_io import commit
     stem = path[:-4] if path.endswith(".npz") else path
     data = dict(params=json.dumps({**params, "commit": commit(), "timing": timing}), rss=np.array(rss),
-                snapshots=np.array(sorted(snaps)))
+                snapshots=np.array(sorted(snaps)), snapshot_times=run.dt * np.array(sorted(snaps)))
     for n, P in snaps.items():
         for name in PROFILES:
             data[f"{name}_{n}"] = np.vstack(P[name])
@@ -239,8 +248,9 @@ if __name__ == "__main__":
     mat = dict(MATERIAL, mu_F=a.mu_f)
     print(f"hemodynamics benchmark, k = {a.k}, h = {a.h[0]}, dt = {a.dt}, {nsteps} steps, material {mat}, "
           f"S_F = mu_F, S_S = {a.S_solid:g}, solver {a.solver}", flush=True)
-    run, snaps, rss, timing = benchmark(a.h[0], a.k, a.dt, nsteps, SNAPSHOTS, mat, a.S_solid, a.solver)
+    snapshots = snapshot_steps(a.dt)
+    run, snaps, rss, timing = benchmark(a.h[0], a.k, a.dt, nsteps, snapshots, mat, a.S_solid, a.solver)
     if a.out:
         save_run(a.out, run, snaps, rss, timing,
                  dict(driver="hemodynamics", k=a.k, h=a.h[0], dt=a.dt, steps=nsteps, material=mat,
-                      S_F=a.mu_f, S_S=a.S_solid, solver=a.solver, start="euler", snapshots=list(SNAPSHOTS)))
+                      S_F=a.mu_f, S_S=a.S_solid, solver=a.solver, start="euler", snapshots=list(snapshots)))

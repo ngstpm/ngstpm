@@ -336,7 +336,7 @@ def material(muF=0.4, rhoF=1.0, E=1.0, nu=0.25, rhoS=1.0, b0=0.0):
 
 
 def run(mesh, DF, DS, order, uF, pF, eta, mat, dt, tables=(TABLE_F, TABLE_S), start="euler", solver="umfpack",
-        monitor=None, nsteps=None, T=None):
+        monitor=None, nsteps=None, T=None, tau=(1.0, 1.0)):
     """Set up the problem on the two-layer mesh, start from the projected exact state and march
     nsteps (or T/dt) steps; returns the FSITransient object (its errors() at the final time)."""
     d = manufactured(uF, pF, eta, mat)
@@ -344,7 +344,7 @@ def run(mesh, DF, DS, order, uF, pF, eta, mat, dt, tables=(TABLE_F, TABLE_S), st
     bcF = (tables[0], uF, d["exF"][0] * n)
     bcS = (tables[1], eta, d["sS"][0] * n)
     run_ = FSITransient(mesh, order, PHI, DF, DS, mat, d["exF"][2], d["sS"][2], d["g"], d["gS"], bcF, bcS, dt,
-                        solver=solver)
+                        tau=tau, solver=solver)
     run_.exact = d["exact"]
     run_.initial_state(d["exS"], d["uF_t"], start=start)
     run_.march(nsteps if nsteps is not None else round(T / dt), start=start, monitor=monitor)
