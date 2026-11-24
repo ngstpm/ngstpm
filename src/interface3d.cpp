@@ -154,6 +154,12 @@ namespace
       }
     pts = std::move (np); lab = std::move (nl);
   }
+
+  // subdivision of the faces (Build3D): m_F in 1, 2, 4, .., MMAX; the path map resolved to
+  // RESOLVE gap; points of F at (A, B) / U in its reference coordinates, U a multiple of 2 MMAX
+  // and 3 MMAX (the nodes, edge midpoints and centroids of the subtriangles are integer)
+  const int MMAX = 16, U = 96;
+  const double RESOLVE = 0.2;
 }
 
 void Interface::Build3D ()
@@ -229,19 +235,215 @@ void Interface::Build3D ()
                            + " (" + ToString(fs.Size()) + " faces meet)");
       images[i].SetSize (facets[i].Size());
       for (int f = 0; f < facets[i].Size(); f++)
+        for (int a = 0; a < 3; a++) images[i][f][a] = image[i][pv[i][f][a]];
+    }
+
+  // Subdivision: the pieces are computed from flat images. Where the path map is not affine on a
+  // face up to the gap (carved sides: paths of length O(h)), the face f is split into m_f^2
+  // congruent subtriangles, m_f in 1, 2, 4, .., MMAX, uniformly in its reference coordinates; its
+  // points are (A, B) / U. The image of a node: at F's vertices the mean above; on an edge e of
+  // Gamma_h^i, at the multiples of 1/m_e (m_e the smallest m_f of the faces at e), the mean of
+  // the faces' path ends, and linear in between (the hanging nodes of a finer face); inside F,
+  // F's path end. So the flat images of the subtriangles form a conforming surface S_i (for
+  // m = 1: the T_F). m_f: the smallest m for which, on each subtriangle, the path map of F
+  // deviates from the affine interpolant of F's own path ends at the nodes by at most RESOLVE gap
+  // across the paths (normal to sigma), at the centroid and the edge midpoints. Then on each edge
+  // with a coarser face, the linear images of the finer face's hanging nodes (and of the
+  // midpoints between them) must be within RESOLVE gap of the mean path end there, else the
+  // coarser face's m is doubled (to a fixed point). The means at vertices and edges differ from a
+  // face's own path ends by the spread of element-wise paths, which no m reduces: that is left to
+  // the absorption (D14), as for m = 1.
+  Array<std::map<std::pair<int,int>,Vec<3>>> xbc[2], sgc[2];   // per face: path end, unit sigma at (A, B)
+  for (int i = 0; i < 2; i++) { xbc[i].SetSize (facets[i].Size()); sgc[i].SetSize (facets[i].Size()); }
+  auto point = [&] (int i, int f, int A, int B) -> Vec<3>     // (A, B) of F; its vertices exactly
+  {
+    const IfcFacet & F = facets[i][f];
+    if (A == 0 && B == 0) return F.p[0];
+    if (A == U) return F.p[1];
+    if (B == U) return F.p[2];
+    return PointAt3 (F, Vec<2> (double (A) / U, double (B) / U));
+  };
+  auto xbar = [&] (int i, int f, int A, int B) -> Vec<3>
+  {
+    auto [it, nw] = xbc[i][f].try_emplace (std::make_pair (A, B));
+    if (nw) it->second = EvalAt3 (sides[i], facets[i][f], point (i, f, A, B), *sides[i].target, lh);
+    return it->second;
+  };
+  auto sig = [&] (int i, int f, int A, int B) -> Vec<3>
+  {
+    auto [it, nw] = sgc[i][f].try_emplace (std::make_pair (A, B));
+    if (nw) it->second = UnitSigma3 (sides[i], facets[i][f], point (i, f, A, B), lh);
+    return it->second;
+  };
+  // the point k / U of the way from va to vb (va < vb, an edge of the face g) in g's coordinates
+  auto onedge = [&] (int i, int g, int va, int vb, int k) -> std::array<int,2>
+  {
+    int l[3];
+    for (int a = 0; a < 3; a++) l[a] = pv[i][g][a] == va ? U - k : pv[i][g][a] == vb ? k : 0;
+    return { l[1], l[2] };
+  };
+  // whether (A, B) of F is on an edge (not a vertex): the edge (va < vb), k / U of the way from va
+  auto edgeof = [&] (int i, int f, int A, int B, int & va, int & vb, int & k)
+  {
+    int l[3] = { U - A - B, A, B }, z = -1, nz = 0;
+    for (int a = 0; a < 3; a++) if (l[a] == 0) { z = a; nz++; }
+    if (nz != 1) return false;
+    int a1 = (z + 1) % 3, a2 = (z + 2) % 3;
+    if (pv[i][f][a1] > pv[i][f][a2]) std::swap (a1, a2);
+    va = pv[i][f][a1]; vb = pv[i][f][a2]; k = l[a2];
+    return true;
+  };
+  // the image of the node k / U of the way from va to vb, k a multiple of U / m_e: the mean of
+  // the path ends of the faces at the edge
+  auto edgenode = [&] (int i, int va, int vb, int k) -> Vec<3>
+  {
+    if (k == 0) return image[i][va];
+    if (k == U) return image[i][vb];
+    const Array<int> & fs = efac[i][{va, vb}];
+    Vec<3> X = 0.0;
+    for (int g : fs) { auto c = onedge (i, g, va, vb, k); X += xbar (i, g, c[0], c[1]); }
+    return (1.0 / fs.Size()) * X;
+  };
+  // the image of the node (A, B) of F on S_i
+  auto nodeimg = [&] (int i, int f, int A, int B) -> Vec<3>
+  {
+    if (A == 0 && B == 0) return image[i][pv[i][f][0]];
+    if (A == U) return image[i][pv[i][f][1]];
+    if (B == U) return image[i][pv[i][f][2]];
+    int va, vb, k;
+    if (!edgeof (i, f, A, B, va, vb, k)) return xbar (i, f, A, B);
+    int me = MMAX;
+    for (int g : efac[i][{va, vb}]) me = min2 (me, nsub[i][g]);
+    int st = U / me, k0 = k - k % st;
+    if (k0 == k) return edgenode (i, va, vb, k);
+    Vec<3> X0 = edgenode (i, va, vb, k0), X1 = edgenode (i, va, vb, k0 + st);
+    return X0 + (double (k - k0) / st) * (X1 - X0);
+  };
+  // the subtriangles of F at the level m, by their nodes (A, B), oriented as F
+  auto subtri = [] (int m)
+  {
+    Array<std::array<std::array<int,2>,3>> T;
+    int s = U / m;
+    for (int A = 0; A < U; A += s)
+      for (int B = 0; A + B < U; B += s)
         {
-          for (int a = 0; a < 3; a++) images[i][f][a] = image[i][pv[i][f][a]];
-          auto & X = images[i][f];
-          if (0.5 * L2Norm (Cross (Vec<3> (X[1] - X[0]), Vec<3> (X[2] - X[0]))) < marea)
-            throw Exception ("pair: the paths of the face " + Pt3 (facets[i][f].p[0]) + " - " + Pt3 (facets[i][f].p[1])
-                             + " - " + Pt3 (facets[i][f].p[2]) + " of Gamma_h^" + ToString(i+1)
-                             + " end closer than the merge tolerance");
+          T.Append ({{ {A, B}, {A + s, B}, {A, B + s} }});
+          if (A + B + 2 * s <= U) T.Append ({{ {A + s, B}, {A + s, B + s}, {A, B + s} }});
+        }
+    return T;
+  };
+  auto across = [] (const Vec<3> & d, const Vec<3> & s) { return L2Norm (Vec<3> (d - InnerProduct (d, s) * s)); };
+  auto deviation = [&] (int i, int f, int m)
+  {
+    double dev = 0;
+    for (auto & T : subtri (m))
+      {
+        Vec<3> X[3];
+        for (int a = 0; a < 3; a++) X[a] = xbar (i, f, T[a][0], T[a][1]);
+        for (int c = 0; c < 4; c++)                     // the edge midpoints (c < 3) and the centroid
+          {
+            double w[3] = { 0, 0, 0 };
+            if (c < 3) w[c] = w[(c + 1) % 3] = 0.5; else w[0] = w[1] = w[2] = 1.0 / 3;
+            int A = 0, B = 0;
+            for (int a = 0; a < 3; a++)
+              if (w[a] > 0) { A += T[a][0]; B += T[a][1]; }
+            A /= c < 3 ? 2 : 3; B /= c < 3 ? 2 : 3;
+            Vec<3> d = xbar (i, f, A, B) - (w[0] * X[0] + w[1] * X[1] + w[2] * X[2]);
+            dev = max2 (dev, across (d, sig (i, f, A, B)));
+          }
+      }
+    return dev;
+  };
+  double resolved = RESOLVE * gap;
+  for (int i = 0; i < 2; i++)
+    {
+      nsub[i].SetSize (facets[i].Size());
+      for (int f = 0; f < facets[i].Size(); f++)
+        {
+          int m = 1;
+          for (double dev; (dev = deviation (i, f, m)) > resolved; m *= 2)
+            if (m == MMAX)
+              {
+                const IfcFacet & F = facets[i][f];
+                throw Exception ("pair: the path map of the face " + Pt3 (F.p[0]) + " - " + Pt3 (F.p[1]) + " - "
+                                 + Pt3 (F.p[2]) + " of Gamma_h^" + ToString(i+1) + " is not resolved by "
+                                 + ToString (MMAX) + "^2 subtriangles (deviation " + ToString (dev) + " > "
+                                 + ToString (resolved) + " across the paths; see pair: the conditions in 3D)");
+              }
+          nsub[i][f] = m;
+        }
+      // the hanging nodes of the finer face on an edge, and the midpoints between them
+      for (bool changed = true; changed; )
+        {
+          changed = false;
+          for (auto & [e, fs] : efac[i])
+            {
+              if (fs.Size() != 2 || nsub[i][fs[0]] == nsub[i][fs[1]]) continue;
+              int fc = nsub[i][fs[0]] < nsub[i][fs[1]] ? fs[0] : fs[1], ff = fs[0] + fs[1] - fc;
+              int st = U / nsub[i][fc];
+              double dev = 0;
+              for (int k = 0; k < U; k += U / (2 * nsub[i][ff]))
+                {
+                  if (k % st == 0) continue;
+                  int k0 = k - k % st;
+                  Vec<3> X0 = edgenode (i, e.first, e.second, k0), X1 = edgenode (i, e.first, e.second, k0 + st);
+                  auto c = onedge (i, ff, e.first, e.second, k);
+                  dev = max2 (dev, across (Vec<3> (edgenode (i, e.first, e.second, k) - X0
+                                                   - (double (k - k0) / st) * (X1 - X0)), sig (i, ff, c[0], c[1])));
+                }
+              if (dev > resolved) { nsub[i][fc] *= 2; changed = true; }
+            }
         }
     }
 
-  // rims of S_i: the edges in one face; at a rim vertex, the direction of the rays bounding
-  // the strips: the normalised sum of the outward conormals (in T_F) of its rim edges
-  struct Rim { int f, a, b; };                          // face, the edge's vertices (a < b)
+  // the subtriangles; their nodes: the vertices of Gamma_h^i (numbered as in the mesh), the nodes
+  // on its edges and inside the faces (numbered from nv on), with their images in image[i]
+  struct Sub { int f; int v[3]; std::array<int,2> c[3]; Vec<2> r[3]; Tri X; };   // face, nodes, (A, B), ref., images
+  Array<Sub> subs[2];
+  Array<int> sfirst[2];                                 // face -> its first subtriangle (and the end)
+  std::map<std::array<int,4>,int> nodeid[2];
+  auto nid = [&] (int i, int f, int A, int B)
+  {
+    if (A == 0 && B == 0) return pv[i][f][0];
+    if (A == U) return pv[i][f][1];
+    if (B == U) return pv[i][f][2];
+    int va, vb, k;
+    std::array<int,4> key = edgeof (i, f, A, B, va, vb, k) ? std::array<int,4> { 0, va, vb, k }
+                                                           : std::array<int,4> { 1, f, A, B };
+    return nodeid[i].try_emplace (key, int (sides[i].ma->GetNV() + nodeid[i].size())).first->second;
+  };
+  for (int i = 0; i < 2; i++)
+    for (int f = 0; f <= facets[i].Size(); f++)
+      {
+        sfirst[i].Append (subs[i].Size());
+        if (f == facets[i].Size()) break;
+        for (auto & T : subtri (nsub[i][f]))
+          {
+            Sub t;
+            t.f = f;
+            for (int a = 0; a < 3; a++)
+              {
+                auto [A, B] = T[a];
+                t.v[a] = nid (i, f, A, B);
+                t.c[a] = T[a];
+                t.r[a] = Vec<2> (double (A) / U, double (B) / U);
+                auto it = image[i].find (t.v[a]);
+                if (it == image[i].end()) it = image[i].emplace (t.v[a], nodeimg (i, f, A, B)).first;
+                t.X[a] = it->second;
+              }
+            auto & X = t.X;
+            if (0.5 * L2Norm (Cross (Vec<3> (X[1] - X[0]), Vec<3> (X[2] - X[0]))) < marea)
+              throw Exception ("pair: the paths of the face " + Pt3 (facets[i][f].p[0]) + " - " + Pt3 (facets[i][f].p[1])
+                               + " - " + Pt3 (facets[i][f].p[2]) + " of Gamma_h^" + ToString(i+1)
+                               + " end closer than the merge tolerance");
+            subs[i].Append (t);
+          }
+      }
+
+  // rims of S_i: the subtriangle edges on the edges of Gamma_h^i in one face; at a rim node, the
+  // direction of the rays bounding the strips: the normalised sum of the outward conormals (in
+  // the image subtriangle) of its rim edges
+  struct Rim { int t, a, b; };                          // subtriangle, the edge's nodes (a < b)
   Array<Rim> rims[2];
   std::map<int,Vec<3>> rimdir[2];
   for (int i = 0; i < 2; i++)
@@ -249,45 +451,86 @@ void Interface::Build3D ()
       for (auto & [e, fs] : efac[i])
         {
           if (fs.Size() != 1) continue;
-          int f = fs[0];
-          rims[i].Append (Rim { f, e.first, e.second });
-          int t = 0;
-          while (pv[i][f][t] == e.first || pv[i][f][t] == e.second) t++;
-          Vec<3> Xa = image[i][e.first], u = image[i][e.second] - Xa, w = Xa - images[i][f][t];
-          u /= L2Norm (u);
-          Vec<3> nu = w - InnerProduct (w, u) * u;
-          nu /= L2Norm (nu);
-          for (int v : { e.first, e.second })
+          int f = fs[0], st = U / nsub[i][f];
+          for (int k = 0; k < U; k += st)
             {
-              if (!rimdir[i].count(v)) rimdir[i][v] = 0.0;
-              rimdir[i][v] += nu;
+              auto c0 = onedge (i, f, e.first, e.second, k), c1 = onedge (i, f, e.first, e.second, k + st);
+              int na = nid (i, f, c0[0], c0[1]), nb = nid (i, f, c1[0], c1[1]);
+              auto has = [] (const Sub & s, int v) { return s.v[0] == v || s.v[1] == v || s.v[2] == v; };
+              int t = sfirst[i][f];
+              while (!(has (subs[i][t], na) && has (subs[i][t], nb))) t++;
+              Rim R { t, min2 (na, nb), max2 (na, nb) };
+              rims[i].Append (R);
+              int q = 0;
+              while (subs[i][t].v[q] == R.a || subs[i][t].v[q] == R.b) q++;
+              Vec<3> Xa = image[i][R.a], u = image[i][R.b] - Xa, w = Xa - subs[i][t].X[q];
+              u /= L2Norm (u);
+              Vec<3> nu = w - InnerProduct (w, u) * u;
+              nu /= L2Norm (nu);
+              for (int v : { R.a, R.b })
+                {
+                  if (!rimdir[i].count(v)) rimdir[i][v] = 0.0;
+                  rimdir[i][v] += nu;
+                }
             }
         }
       for (auto & [v, d] : rimdir[i]) d /= L2Norm (d);
     }
-  Array<Array<int>> frims[2];                           // face -> its rim edges
+  Array<Array<int>> frims[2];                           // subtriangle -> its rim edges
   for (int i = 0; i < 2; i++)
     {
-      frims[i].SetSize (facets[i].Size());
-      for (int r = 0; r < rims[i].Size(); r++) frims[i][rims[i][r].f].Append (r);
+      frims[i].SetSize (subs[i].Size());
+      for (int r = 0; r < rims[i].Size(); r++) frims[i][rims[i][r].t].Append (r);
     }
 
-  // bounding spheres of the image triangles; their unit normals, oriented as the outward
-  // normal of the owner element on F (the vertex order of F carried over to T_F)
-  Array<Vec<3>> ctr[2], nimg[2]; Array<double> rad[2];
+  // bounding spheres of the image subtriangles; their unit normals, oriented as the outward
+  // normal of the owner element on F (the vertex order of F carried over); the charts' normals
+  Array<Vec<3>> ctr[2], nimg[2], nrm[2]; Array<double> rad[2];
   for (int i = 0; i < 2; i++)
-    for (int f = 0; f < images[i].Size(); f++)
-      {
-        const Tri & X = images[i][f];
-        const IfcFacet & F = facets[i][f];
-        Vec<3> c = (1.0 / 3) * (X[0] + X[1] + X[2]);
-        ctr[i].Append (c);
-        rad[i].Append (max2 (L2Norm (X[0] - c), max2 (L2Norm (X[1] - c), L2Norm (X[2] - c))));
-        Vec<3> nF = Cross (Vec<3> (F.p[1] - F.p[0]), Vec<3> (F.p[2] - F.p[0]));
-        nimg[i].Append (InnerProduct (nF, OutwardNormal3 (sides[i], F)) > 0 ? UnitNormal (X) : Vec<3> (-1.0 * UnitNormal (X)));
-      }
+    {
+      Array<Vec<3>> nout;
+      for (auto & F : facets[i]) nout.Append (OutwardNormal3 (sides[i], F));
+      for (int t = 0; t < subs[i].Size(); t++)
+        {
+          const Tri & X = subs[i][t].X;
+          int f = subs[i][t].f;
+          const IfcFacet & F = facets[i][f];
+          Vec<3> c = (1.0 / 3) * (X[0] + X[1] + X[2]);
+          ctr[i].Append (c);
+          rad[i].Append (max2 (L2Norm (X[0] - c), max2 (L2Norm (X[1] - c), L2Norm (X[2] - c))));
+          Vec<3> nF = Cross (Vec<3> (F.p[1] - F.p[0]), Vec<3> (F.p[2] - F.p[0]));
+          nimg[i].Append (InnerProduct (nF, OutwardNormal3 (sides[i], F)) > 0 ? UnitNormal (X) : Vec<3> (-1.0 * UnitNormal (X)));
+          // the chart: normal to the mean path direction at the vertices of t (projecting S_j along
+          // the paths), oriented as t's image normal; the image (possibly a sliver far off the
+          // tangent plane) only gives the affine map to F
+          auto & cs = subs[i][t].c;
+          Vec<3> n0 = 0.0, s0 = sig (i, f, cs[0][0], cs[0][1]);
+          for (int a = 0; a < 3; a++)
+            {
+              Vec<3> sa = sig (i, f, cs[a][0], cs[a][1]);
+              n0 += InnerProduct (sa, s0) < 0 ? Vec<3> (-1.0 * sa) : sa;
+            }
+          n0 /= L2Norm (n0);
+          // a fold: the image of t is oriented opposite to F along the paths
+          double cf = InnerProduct (n0, nout[f]), ct = InnerProduct (n0, nimg[i][t]);
+          if (cf * ct < 0)
+            throw Exception ("pair: the paths of Gamma_h^" + ToString(i+1) + " fold at the face " + Pt3 (F.p[0])
+                             + " - " + Pt3 (F.p[1]) + " - " + Pt3 (F.p[2]) + ": the image of its subtriangle at "
+                             + Pt3 (PointAt3 (F, (1.0 / 3) * (subs[i][t].r[0] + subs[i][t].r[1] + subs[i][t].r[2])))
+                             + " (of " + ToString (nsub[i][f] * nsub[i][f]) + ") is oriented opposite to the face "
+                             "along the paths (cosines with the mean path direction: face " + ToString (cf)
+                             + ", image " + ToString (ct) + "; see pair: the conditions in 3D)");
+          if (InnerProduct (n0, nimg[i][t]) < 0) n0 *= -1.0;
+          if (InnerProduct (n0, nimg[i][t]) < 1e-3)
+            throw Exception ("pair: the path ends of the face " + Pt3 (F.p[0]) + " - " + Pt3 (F.p[1]) + " - "
+                             + Pt3 (F.p[2]) + " of Gamma_h^" + ToString(i+1) + " span a triangle (nearly) parallel "
+                             "to its paths (cosine " + ToString (InnerProduct (n0, nimg[i][t])) + "): no chart");
+          nrm[i].Append (n0);
+        }
+    }
 
-  // pieces: for each face F of side i, clip in the chart of F against the faces of side j
+  // pieces: for each subtriangle t of a face F of side i, clip in the chart of t against the
+  // subtriangles of side j; a polygon in the subtriangle t' of F' belongs to the segment (F, F')
   std::map<std::pair<int,int>,int> segof;              // (face of side 1, face of side 2) -> segment
   auto piece = [&] (int i, int f, int g) -> IfcPiece &
   {
@@ -304,9 +547,9 @@ void Interface::Build3D ()
       }
     return segments[it->second].piece[i];
   };
-  // candidates: the image triangles of each side binned in a uniform grid of cells of width
+  // candidates: the image subtriangles of each side binned in a uniform grid of cells of width
   // 2 rmax + 2 gap (rmax: the largest bounding radius of both sides), so that the bounding-sphere
-  // test below can only pass for triangles in the 27 cells around the centre's cell
+  // test below can only pass for subtriangles in the 27 cells around the centre's cell
   double rmax = 0;
   for (int i = 0; i < 2; i++) for (double r : rad[i]) rmax = max2 (rmax, r);
   double cell = 2 * rmax + 2 * gap;
@@ -314,131 +557,124 @@ void Interface::Build3D ()
   { return std::array<int,3> { int (floor (c(0) / cell)), int (floor (c(1) / cell)), int (floor (c(2) / cell)) }; };
   std::map<std::array<int,3>,Array<int>> grid[2];
   for (int i = 0; i < 2; i++)
-    for (int f = 0; f < ctr[i].Size(); f++) grid[i][cellof (ctr[i][f])].Append (f);
+    for (int t = 0; t < ctr[i].Size(); t++) grid[i][cellof (ctr[i][t])].Append (t);
   for (int i = 0; i < 2; i++)
     {
       int j = 1 - i;
       for (int f = 0; f < facets[i].Size(); f++)
         {
           const IfcFacet & F = facets[i][f];
-          const Tri & XF = images[i][f];
-          // the chart: normal to the mean path direction at the vertices of F (projecting S_j
-          // along the paths), oriented as T_F's normal; T_F (possibly a sliver far off the
-          // tangent plane) only gives the affine map to F
-          Vec<3> n0 = 0.0, s0 = UnitSigma3 (sides[i], F, F.p[0], lh);
-          for (int a = 0; a < 3; a++)
-            {
-              Vec<3> sa = UnitSigma3 (sides[i], F, F.p[a], lh);
-              n0 += InnerProduct (sa, s0) < 0 ? Vec<3> (-1.0 * sa) : sa;
-            }
-          n0 /= L2Norm (n0);
-          if (InnerProduct (n0, nimg[i][f]) < 0) n0 *= -1.0;
-          if (InnerProduct (n0, nimg[i][f]) < 1e-3)
-            throw Exception ("pair: the path ends of the face " + Pt3 (F.p[0]) + " - " + Pt3 (F.p[1]) + " - "
-                             + Pt3 (F.p[2]) + " of Gamma_h^" + ToString(i+1) + " span a triangle (nearly) parallel "
-                             "to its paths (cosine " + ToString (InnerProduct (n0, nimg[i][f])) + "): no chart");
-          Chart P(XF, n0);
-          Vec<2> c[3];
-          for (int a = 0; a < 3; a++) c[a] = P(XF[a]);
-          // chart -> F's reference coordinates: c0 + xi (c1 - c0) + eta (c2 - c0)
-          Vec<2> d1 = c[1] - c[0], d2 = c[2] - c[0];
-          double det = Cross2 (d1, d2);
-          auto toref = [&] (const Vec<2> & q)
-          {
-            Vec<2> w = q - c[0];
-            return Vec<2> (Cross2 (w, d2) / det, Cross2 (d1, w) / det);
-          };
-          Array<Line> lines;
-          for (int a = 0; a < 3; a++)                          // the edges of T_F
-            {
-              int u = a, w = (a + 1) % 3;
-              if (pv[i][f][u] > pv[i][f][w]) std::swap (u, w);
-              Line L; L.O = c[u]; L.E = c[w]; L.tf = a;
-              lines.Append (L);
-            }
-          // a line of S_j through the images of its vertices v, w, canonically ordered
-          auto sjline = [&] (int v, int w)
-          {
-            Line L;
-            if (v > w) std::swap (v, w);
-            L.O = P(image[j][v]); L.E = P(image[j][w]); L.va = v; L.vb = w;
-            return L;
-          };
-          int ncand = 0;
+          int ncand = 0, nnear = 0;
           double covered = 0;
-          auto add = [&] (int g, Array<Vec<2>> & pts)
-          {
-            if (pts.Size() < 3) return;
-            Array<Vec<2>> r;
-            for (auto & q : pts) r.Append (toref (q));
-            double a = 0;
-            for (size_t k = 1; k + 1 < r.Size(); k++) a += 0.5 * Cross2 (r[k] - r[0], r[k + 1] - r[0]);
-            a = fabs (a) * 2 * F.len;                          // physical area of the polygon
-            if (a < marea) return;                             // a sliver below the merge tolerance
-            IfcPiece & pc = piece (i, f, g);
-            for (size_t k = 1; k + 1 < r.Size(); k++) pc.tri.push_back ({ r[0], r[k], r[k + 1] });
-            pc.area += a;
-            covered += a;
-          };
-          // the faces of side j in the cells around T_F's, in increasing order (as a plain search)
-          Array<int> cand;
-          auto c0 = cellof (ctr[i][f]);
-          for (int a = -1; a <= 1; a++) for (int b = -1; b <= 1; b++) for (int d = -1; d <= 1; d++)
+          for (int t = sfirst[i][f]; t < sfirst[i][f + 1]; t++)
             {
-              auto it = grid[j].find ({ c0[0] + a, c0[1] + b, c0[2] + d });
-              if (it != grid[j].end()) for (int g : it->second) cand.Append (g);
-            }
-          std::sort (cand.begin(), cand.end());
-          for (int g : cand)
-            {
-              if (L2Norm (ctr[i][f] - ctr[j][g]) > rad[i][f] + rad[j][g] + 2 * gap) continue;
-              const Tri & XG = images[j][g];
-              // the two sides lie on either side of Gamma: paired faces have (oriented) image
-              // normals on opposite sides of the chart; this tells apart sheets of Gamma closer
-              // than h (no margin: a sliver T_G may be nearly parallel to the paths)
-              if (InnerProduct (nimg[j][g], n0) >= 0) continue;
-              ncand++;
-              Vec<2> Q[3];
-              for (int a = 0; a < 3; a++) Q[a] = P(XG[a]);
-              int ord[3] = { 0, 1, 2 };                         // counter-clockwise in the chart
-              if (Cross2 (Q[1] - Q[0], Q[2] - Q[0]) < 0) std::swap (ord[1], ord[2]);
-              lines.SetSize (3);
-              Array<Vec<2>> pts; Array<int> lab;
-              for (int a = 0; a < 3; a++) { pts.Append (c[a]); lab.Append (a); }
-              // inside: left of the counter-clockwise edge A -> B; with canonical (O, E), the sign s
-              for (int a = 0; a < 3 && pts.Size(); a++)
+              const Sub & T = subs[i][t];
+              const Tri & XF = T.X;
+              const Vec<3> & n0 = nrm[i][t];
+              Chart P(XF, n0);
+              Vec<2> c[3];
+              for (int a = 0; a < 3; a++) c[a] = P(XF[a]);
+              // chart -> t's reference coordinates: c0 + xi (c1 - c0) + eta (c2 - c0) -> F's
+              Vec<2> d1 = c[1] - c[0], d2 = c[2] - c[0];
+              double det = Cross2 (d1, d2);
+              auto toref = [&] (const Vec<2> & q)
+              {
+                Vec<2> w = q - c[0];
+                double xi = Cross2 (w, d2) / det, eta = Cross2 (d1, w) / det;
+                return Vec<2> (T.r[0] + xi * (T.r[1] - T.r[0]) + eta * (T.r[2] - T.r[0]));
+              };
+              Array<Line> lines;
+              for (int a = 0; a < 3; a++)                          // the edges of t's image
                 {
-                  int va = pv[j][g][ord[a]], vb = pv[j][g][ord[(a + 1) % 3]];
-                  lines.Append (sjline (va, vb));
-                  Clip (pts, lab, lines, lines.Size() - 1, va < vb ? 1.0 : -1.0);
+                  int u = a, w = (a + 1) % 3;
+                  if (T.v[u] > T.v[w]) std::swap (u, w);
+                  Line L; L.O = c[u]; L.E = c[w]; L.tf = a;
+                  lines.Append (L);
                 }
-              add (g, pts);
-              // the strips beyond the rim edges of G
-              for (int r : frims[j][g])
+              // a line of S_j through the images of its nodes v, w, canonically ordered
+              auto sjline = [&] (int v, int w)
+              {
+                Line L;
+                if (v > w) std::swap (v, w);
+                L.O = P(image[j][v]); L.E = P(image[j][w]); L.va = v; L.vb = w;
+                return L;
+              };
+              auto add = [&] (int g, Array<Vec<2>> & pts)
+              {
+                if (pts.Size() < 3) return;
+                Array<Vec<2>> r;
+                for (auto & q : pts) r.Append (toref (q));
+                double a = 0;
+                for (size_t k = 1; k + 1 < r.Size(); k++) a += 0.5 * Cross2 (r[k] - r[0], r[k + 1] - r[0]);
+                a = fabs (a) * 2 * F.len;                          // physical area of the polygon
+                if (a < marea) return;                             // a sliver below the merge tolerance
+                IfcPiece & pc = piece (i, f, subs[j][g].f);
+                for (size_t k = 1; k + 1 < r.Size(); k++) pc.tri.push_back ({ r[0], r[k], r[k + 1] });
+                pc.area += a;
+                covered += a;
+              };
+              // the subtriangles of side j in the cells around t's image, in increasing order
+              Array<int> cand;
+              auto c0 = cellof (ctr[i][t]);
+              for (int a = -1; a <= 1; a++) for (int b = -1; b <= 1; b++) for (int d = -1; d <= 1; d++)
                 {
+                  auto it = grid[j].find ({ c0[0] + a, c0[1] + b, c0[2] + d });
+                  if (it != grid[j].end()) for (int g : it->second) cand.Append (g);
+                }
+              std::sort (cand.begin(), cand.end());
+              for (int g : cand)
+                {
+                  if (L2Norm (ctr[i][t] - ctr[j][g]) > rad[i][t] + rad[j][g] + 2 * gap) continue;
+                  nnear++;
+                  const Tri & XG = subs[j][g].X;
+                  const int * vg = subs[j][g].v;
+                  // the two sides lie on either side of Gamma: paired faces have (oriented) image
+                  // normals on opposite sides of the chart; this tells apart sheets of Gamma closer
+                  // than h (no margin: a sliver image may be nearly parallel to the paths)
+                  if (InnerProduct (nimg[j][g], n0) >= 0) continue;
                   ncand++;
-                  int va = rims[j][r].a, vb = rims[j][r].b;
-                  int ka = 0; while (pv[j][g][ord[ka]] != va) ka++;
-                  bool ccw = pv[j][g][ord[(ka + 1) % 3]] == vb;  // A -> B = va -> vb counter-clockwise
+                  Vec<2> Q[3];
+                  for (int a = 0; a < 3; a++) Q[a] = P(XG[a]);
+                  int ord[3] = { 0, 1, 2 };                         // counter-clockwise in the chart
+                  if (Cross2 (Q[1] - Q[0], Q[2] - Q[0]) < 0) std::swap (ord[1], ord[2]);
                   lines.SetSize (3);
-                  pts.SetSize0 (); lab.SetSize0 ();
+                  Array<Vec<2>> pts; Array<int> lab;
                   for (int a = 0; a < 3; a++) { pts.Append (c[a]); lab.Append (a); }
-                  Line Lb = sjline (va, vb);                    // O = va, E = vb
-                  lines.Append (Lb);
-                  Clip (pts, lab, lines, 3, ccw ? -1.0 : 1.0);  // outside G
-                  Vec<2> t = Lb.E - Lb.O, nout = ccw ? Vec<2> (t(1), -t(0)) : Vec<2> (-t(1), t(0));
-                  nout /= L2Norm (nout);
-                  Line Lo; Lo.O = Lb.O + gap * nout; Lo.E = Lb.E + gap * nout;
-                  lines.Append (Lo);                            // depth gap: on the side of Lb
-                  Clip (pts, lab, lines, 4, G(Lo, Lb.O) >= 0 ? 1.0 : -1.0);
-                  for (int v : { va, vb })                      // the rays at the rim vertices
+                  // inside: left of the counter-clockwise edge A -> B; with canonical (O, E), the sign s
+                  for (int a = 0; a < 3 && pts.Size(); a++)
                     {
-                      Line R; R.O = P(image[j][v]); R.E = R.O + P.Lin (rimdir[j][v]); R.va = v;
-                      lines.Append (R);
-                      Vec<2> other = v == va ? Lb.E : Lb.O;
-                      if (pts.Size()) Clip (pts, lab, lines, lines.Size() - 1, G(R, other) >= 0 ? 1.0 : -1.0);
+                      int va = vg[ord[a]], vb = vg[ord[(a + 1) % 3]];
+                      lines.Append (sjline (va, vb));
+                      Clip (pts, lab, lines, lines.Size() - 1, va < vb ? 1.0 : -1.0);
                     }
                   add (g, pts);
+                  // the strips beyond the rim edges of t'
+                  for (int r : frims[j][g])
+                    {
+                      ncand++;
+                      int va = rims[j][r].a, vb = rims[j][r].b;
+                      int ka = 0; while (vg[ord[ka]] != va) ka++;
+                      bool ccw = vg[ord[(ka + 1) % 3]] == vb;       // A -> B = va -> vb counter-clockwise
+                      lines.SetSize (3);
+                      pts.SetSize0 (); lab.SetSize0 ();
+                      for (int a = 0; a < 3; a++) { pts.Append (c[a]); lab.Append (a); }
+                      Line Lb = sjline (va, vb);                    // O = va, E = vb
+                      lines.Append (Lb);
+                      Clip (pts, lab, lines, 3, ccw ? -1.0 : 1.0);  // outside t'
+                      Vec<2> tv = Lb.E - Lb.O, nout = ccw ? Vec<2> (tv(1), -tv(0)) : Vec<2> (-tv(1), tv(0));
+                      nout /= L2Norm (nout);
+                      Line Lo; Lo.O = Lb.O + gap * nout; Lo.E = Lb.E + gap * nout;
+                      lines.Append (Lo);                            // depth gap: on the side of Lb
+                      Clip (pts, lab, lines, 4, G(Lo, Lb.O) >= 0 ? 1.0 : -1.0);
+                      for (int v : { va, vb })                      // the rays at the rim nodes
+                        {
+                          Line R; R.O = P(image[j][v]); R.E = R.O + P.Lin (rimdir[j][v]); R.va = v;
+                          lines.Append (R);
+                          Vec<2> other = v == va ? Lb.E : Lb.O;
+                          if (pts.Size()) Clip (pts, lab, lines, lines.Size() - 1, G(R, other) >= 0 ? 1.0 : -1.0);
+                        }
+                      add (g, pts);
+                    }
                 }
             }
           // coverage: the pieces tile F, up to the slivers dropped (each below marea)
@@ -447,14 +683,21 @@ void Interface::Build3D ()
             throw Exception ("pair: unpaired piece of Gamma_h^" + ToString(i+1) + " (side " + ToString(i+1)
                              + ") on the face " + Pt3 (F.p[0]) + " - " + Pt3 (F.p[1]) + " - " + Pt3 (F.p[2])
                              + ", uncovered area " + ToString (F.len - covered) + " of " + ToString (F.len)
-                             + ": no path of side " + ToString(j+1) + " ends on its part of Gamma, or the paths of "
-                             "a side fold there (see pair: the conditions in 3D)");
+                             + (ncand == 0 && nnear > 0
+                                ? ": the faces of side " + ToString(j+1) + " near its path ends are all oriented as "
+                                  "it, not on the other side of Gamma (see pair: the conditions in 3D)"
+                                : ": no path of side " + ToString(j+1) + " ends on its part of Gamma, or the paths "
+                                  "of a side fold there (see pair: the conditions in 3D)"));
           if (covered > F.len + tol)
-            throw Exception ("pair: the pieces of the face " + Pt3 (F.p[0]) + " - " + Pt3 (F.p[1]) + " - " + Pt3 (F.p[2])
-                             + " of Gamma_h^" + ToString(i+1) + " (side " + ToString(i+1) + ") cover "
-                             + ToString (covered) + " of its area " + ToString (F.len) + ": near " + Pt3 (ctr[i][f])
-                             + " the paths of side " + ToString(j+1) + " overlap on Gamma, or the paths of a side "
-                             "fold there (see pair: the conditions in 3D)");
+            {
+              const Tri & XF = images[i][f];
+              throw Exception ("pair: the pieces of the face " + Pt3 (F.p[0]) + " - " + Pt3 (F.p[1]) + " - " + Pt3 (F.p[2])
+                               + " of Gamma_h^" + ToString(i+1) + " (side " + ToString(i+1) + ") cover "
+                               + ToString (covered) + " of its area " + ToString (F.len) + ": near "
+                               + Pt3 (Vec<3> ((1.0 / 3) * (XF[0] + XF[1] + XF[2])))
+                               + " the paths of side " + ToString(j+1) + " overlap on Gamma, or the paths of a side "
+                               "fold there (see pair: the conditions in 3D)");
+            }
         }
     }
 
@@ -578,15 +821,15 @@ void Interface::Rule3D (int side, size_t s, int intorder, Array<IfcPoint> & pts,
 
 py::dict InterfacePieces3D (const Interface & I)
 {
-  // per segment s and side i: facet, el, loc, area; per triangle k of the pieces: its
-  // segment, side, reference and physical vertices
+  // per segment s and side i: facet, el, loc, area, m (the face's subdivision); per triangle
+  // k of the pieces: its segment, side, reference and physical vertices
   size_t n = I.NSegments(), m = 0;
   for (size_t s = 0; s < n; s++)
     for (int i = 0; i < 2; i++) m += I.Segment(s).piece[i].tri.size();
-  py::array_t<int> facet({n, size_t(2)}), el({n, size_t(2)}), loc({n, size_t(2)}), tseg(m), tside(m);
+  py::array_t<int> facet({n, size_t(2)}), el({n, size_t(2)}), loc({n, size_t(2)}), msub({n, size_t(2)}), tseg(m), tside(m);
   py::array_t<double> area({n, size_t(2)}), tref({m, size_t(3), size_t(2)}), tx({m, size_t(3), size_t(3)});
   auto fa = facet.mutable_unchecked<2>(), ea = el.mutable_unchecked<2>(), la = loc.mutable_unchecked<2>();
-  auto aa = area.mutable_unchecked<2>();
+  auto aa = area.mutable_unchecked<2>(); auto ma = msub.mutable_unchecked<2>();
   auto sa = tseg.mutable_unchecked<1>(), da = tside.mutable_unchecked<1>();
   auto ra = tref.mutable_unchecked<3>(), xa = tx.mutable_unchecked<3>();
   size_t k = 0;
@@ -595,7 +838,7 @@ py::dict InterfacePieces3D (const Interface & I)
       {
         auto & P = I.Segment(s).piece[i];
         auto & F = I.Facet (i, P.f);
-        fa(s, i) = F.facet; ea(s, i) = F.el; la(s, i) = F.loc; aa(s, i) = P.area;
+        fa(s, i) = F.facet; ea(s, i) = F.el; la(s, i) = F.loc; aa(s, i) = P.area; ma(s, i) = I.NSub (i, P.f);
         for (auto & T : P.tri)
           {
             sa(k) = s; da(k) = i;
@@ -609,7 +852,7 @@ py::dict InterfacePieces3D (const Interface & I)
           }
       }
   py::dict d;
-  d["facet"] = facet; d["el"] = el; d["loc"] = loc; d["area"] = area;
+  d["facet"] = facet; d["el"] = el; d["loc"] = loc; d["area"] = area; d["m"] = msub;
   d["tri_seg"] = tseg; d["tri_side"] = tside; d["tri_ref"] = tref; d["tri_x"] = tx;
   return d;
 }

@@ -100,6 +100,7 @@ class InterfacePieces(NamedTuple):
     el: np.ndarray       # (n, 2)          element of D_h^i owning F
     loc: np.ndarray      # (n, 2)          local facet number of F in el
     area: np.ndarray     # (n, 2)          physical area of the piece on F (0: empty)
+    m: np.ndarray        # (n, 2)          F split into m^2 subtriangles (see pair)
     tri_seg: np.ndarray  # (m,)            segment of the triangle
     tri_side: np.ndarray # (m,)            side of the triangle (0: side 1, 1: side 2)
     tri_ref: np.ndarray  # (m, 3, 2)       its vertices in F's reference coordinates

@@ -576,7 +576,8 @@ void ExportInterface (py::module & m)
           },
           "dict of numpy arrays over segments s and sides i: facet, el, loc [s,i]; t [s,i,end]\n"
           "(the piece: x = p0 + t (p1 - p0), p0, p1 the facet's vertices); x, xbar [s,i,end,:].\n"
-          "3D: facet, el, loc, area [s,i] (area 0: empty piece) and the pieces' triangles k:\n"
+          "3D: facet, el, loc, area, m [s,i] (area 0: empty piece; m: the face split into m^2\n"
+          "subtriangles) and the pieces' triangles k:\n"
           "tri_seg, tri_side [k], tri_ref [k,vertex,:] (reference coordinates on the face:\n"
           "x = p0 + xi (p1 - p0) + eta (p2 - p0)), tri_x [k,vertex,:]")
     .def ("_rule", [] (shared_ptr<Interface> self, int side, int intorder)

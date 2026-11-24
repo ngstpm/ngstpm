@@ -44,6 +44,7 @@ class Interface
   ngcore::Array<IfcFacet> facets[2];
   ngcore::Array<IfcSegment> segments;
   ngcore::Array<std::array<ngbla::Vec<3>,3>> images[2];   // 3D: the image triangle T_F of each face
+  ngcore::Array<int> nsub[2];                              // 3D: each face split into nsub^2 subtriangles
   double merge_tol, gap_tol, hmean;   // hmean: mean facet length of Gamma_h^1 (3D: see Build3D)
   int dim = 2;
   void Build ();
@@ -68,6 +69,7 @@ public:
   const std::shared_ptr<ngcomp::MeshAccess> & Mesh (int side) const { return sides[side].ma; }   // side 0, 1
   const IfcSide & Side (int side) const { return sides[side]; }
   const IfcFacet & Facet (int side, int f) const { return facets[side][f]; }
+  int NSub (int side, int f) const { return nsub[side][f]; }                // 3D
   size_t NSegments () const { return segments.Size(); }
   const IfcSegment & Segment (size_t s) const { return segments[s]; }
   // 3D: a segment's piece of one side may be empty (a sliver kept on the other side only)
