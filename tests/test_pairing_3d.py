@@ -24,7 +24,7 @@ from functools import lru_cache
 import numpy as np
 import pytest
 from netgen.csg import CSGeometry, Cylinder, OrthoBrick, Plane, Pnt, Sphere, Vec
-from ngsolve import BitArray, CF, Integrate, Mesh, VOL, ds, sqrt, x, y, z
+from ngsolve import BitArray, CF, GridFunction, Integrate, L2, Mesh, VOL, ds, sqrt, x, y, z
 from ngsolve.meshes import MakeStructured3DMesh
 
 from ngstpm import pair, transfer_paths
@@ -357,3 +357,55 @@ def test_other_sheet_raises(mat2):
     msg = "uncovered area" if mat2 == "out" else "the path of its partner .* > the gap tolerance"
     with pytest.raises(Exception, match=r"unpaired piece of Gamma_h\^1 \(side 1\).*" + msg):
         pair(p1, p2)
+
+
+def tilted_side(shift, h, d=0.05, seed=0):
+    """Discontinuous paths: the box (0, 1)^2 x (-0.3, 0.3) split at z = -d, D_h the
+    part below, Gamma_h its top; straight paths to Gamma = {z = 0} with direction
+    sigma = (t_K, 1), t_K constant per element K, |t_K| d = shift (random directions)
+    on the elements with centroid in (0.2, 0.8)^2 (the rim stays in place), else 0."""
+    geo = CSGeometry()
+    b = OrthoBrick(Pnt(0, 0, -0.3), Pnt(1, 1, -d))
+    geo.Add(b.mat("below"))
+    geo.Add((OrthoBrick(Pnt(0, 0, -0.3), Pnt(1, 1, 0.3)) - b).mat("above"))
+    mesh = Mesh(geo.GenerateMesh(maxh=h))
+    D = BitArray([el.mat == "below" for el in mesh.Elements(VOL)])
+    F = BitArray(mesh.nfacet)
+    F.Clear()
+    for f in mesh.facets:
+        els = [e.nr for e in f.elements]
+        F[f.nr] = len(els) == 2 and D[els[0]] != D[els[1]]
+    tilt = GridFunction(L2(mesh, order=0) ** 2)
+    rng = np.random.default_rng(seed)
+    for el in mesh.Elements(VOL):
+        c = np.mean([mesh[v].point for v in el.vertices], axis=0)
+        if D[el.nr] and max(abs(c[0] - 0.5), abs(c[1] - 0.5)) < 0.3:
+            t = rng.normal(size=2)
+            tilt.vec.FV().NumPy()[[el.nr, mesh.ne + el.nr]] = shift / d / np.linalg.norm(t) * t
+    sigma = CF((tilt[0], tilt[1], 1))
+    return type("P", (), dict(mesh=mesh, elements=D, facets=F, target=CF((x, y, z)) - z * sigma, sigma=sigma))
+
+
+@pytest.mark.parametrize("shift", [0.03, 0.04])
+def test_absorption(shift):
+    """The D14 absorption in 3D: the bottom of the slab (identity paths, h = 0.37)
+    against tilted_side (h = 0.25; the path ends of a vertex's elements differ by up
+    to 2 shift). Where no point of F' has its path line through xbar, x' is the point
+    of F', at most GAP_TOL h outside it, whose line passes closest. Measured at shift
+    0.03 = 0.08 h: 76 and 98 of about 2370 points (order 6, side 1 and 2) absorbed,
+    missing by up to 2.4e-2 h and 3.7e-2 h; at 0.04 the miss exceeds GAP_TOL h."""
+    p1 = slab_side(slab_mesh(0.3, 0.33), "slab", 0.3, "bottom")
+    p2 = tilted_side(shift, 0.25)
+    if shift > 0.035:
+        with pytest.raises(Exception, match=r"unpaired piece of Gamma_h\^1 \(side 1\)"):
+            pair(p1, p2)
+        return
+    I = pair(p1, p2)
+    r = check(I, p1, p2)
+    assert r["defect"] <= 0 and r["side_tiling"] < 1e-12 and r["inref"] < 1e-12 and r["onface"] < 1e-12
+    assert r["over"] <= GAP_TOL * (1 + 1e-12)                  # x' at most GAP_TOL h outside F'
+    for side in (1, 2):
+        R = I._rule(side, 6)
+        miss = np.linalg.norm(np.cross(R["xbar"] - R["xp"], R["sigmap"]), axis=1)
+        assert np.sum(miss > 1e-10) > 0.01 * len(miss)         # the absorption is reached
+        assert miss.max() <= GAP_TOL * r["h"]
