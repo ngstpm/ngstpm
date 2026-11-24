@@ -9,7 +9,18 @@ Carved staircases fold in 3D (faces of Gamma_h facing back into D_h, against
 their paths) or are not surfaces (four faces at an edge), and pair raises on
 them; unfitted_domain(..., max_normal_deviation=85) prunes the elements owning
 such faces (and those along the paths) and the sides pair.
-Smoke-sized: three coarse levels, under ~2 GB.
+
+EXPERIMENTAL: the solve does NOT converge. The pairing is accurate (no point
+absorbed at maxh 0.3, 0.2; partners on the paths to 2e-14) and piecewise affine
+solutions are reproduced to roundoff, but the errors stay 10-150 times the L2
+projection error on the same D_h, concentrated in the elements next to Gamma_h.
+Measured (k = 1; maxh 0.4, 0.3, 0.2; 0.2 needs 3.0 GB and ~4 min):
+|u - uh| = 4.92e-2, 3.27e-2, 4.30e-2, |q - qh| = 3.55, 2.20, 3.10; k = 2
+(maxh 0.4, 0.3): |u - uh| = 2.23e-3, 1.29e-2, |q - qh| = 7.74e-2, 0.736. The
+same on structured background meshes (n = 6, 8, 12 with or without, n = 16 with
+pruning: |q - qh| 8 to 21 times the projection error). The Dirichlet problem
+(poisson_tpm.solve) on the unpruned D_h^1 of the same mesh converges, as does a flat interface with
+a gap of h. Not resolved; the example is kept to reproduce it.
 """
 
 from math import log
@@ -22,7 +33,7 @@ from poisson_interface import solve
 from poisson_interface_two_meshes_3d import f1, f2, gD, gN, kappa1, kappa2, phi, q1, q2, u1, u2
 
 MAX_DEVIATION = 85
-LEVELS = (0.4, 0.3, 0.2)
+LEVELS = (0.4, 0.3)                              # 0.2: 3.0 GB
 
 
 def domains(maxh, L=1.5, max_normal_deviation=MAX_DEVIATION):

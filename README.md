@@ -146,8 +146,11 @@ quadrature rule per triangle of a piece. A carved staircase in 3D may fold
 at an edge), and `pair` raises there;
 `unfitted_domain(mesh, phi, side, max_normal_deviation=85)` drops the
 elements owning faces whose normal deviates from that of `Gamma` by more
-than 85 degrees (as MATLAB's `prune_infeasible_elements`), which removes
-them on the carved spheres of the tests.
+than 85 degrees (after MATLAB's `prune_infeasible_elements`), which removes
+them on the carved spheres of the tests. The interface solve on carved sides
+in 3D is experimental: it pairs and reproduces affine solutions, but does not
+converge on the sphere (`examples/poisson_interface_3d.py`); two meshes with
+their vertices on `Gamma` work.
 
 | | |
 |---|---|
@@ -222,6 +225,6 @@ python examples/poisson_tpm_neumann.py  # Neumann condition on the unfitted boun
 python examples/poisson_interface.py    # interface problem: fitted, snapped, unfitted
 python examples/poisson_interface_two_meshes.py  # the same on two non-matching meshes
 python examples/poisson_interface_two_meshes_3d.py  # two meshes, unit sphere (a few minutes)
-python examples/poisson_interface_3d.py  # one carved background mesh, unit sphere (pruned)
+python examples/poisson_interface_3d.py  # one carved background mesh: EXPERIMENTAL, does not converge
 pytest
 ```
