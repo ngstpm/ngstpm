@@ -543,6 +543,29 @@ def test_folded_paths(c):
     assert S.m[:, 0].max() == 1 and S.m[:, 1].max() > 1
 
 
+def test_carved_pruned_pairs():
+    """The folded carve of test_carved_raises (structured, n = 7, box width 3.0) pruned with
+    unfitted_domain(..., max_normal_deviation=85): 8 elements of D_h^1 are dropped (none of
+    D_h^2), and the sides pair. Measured: per face up to 3.0e-10 h^2 dropped in slivers, per
+    side 1.6e-11 relative, x' at most 1.3e-2 h outside F', xbar - x' parallel to sigma(x')
+    to 1.9e-14. (Structured n = 16, width 3.1, pruned likewise, pairs too, but x' reaches
+    GAP_TOL h outside F' and some points are absorbed, |(xbar - x') x sigma'| = 1.2e-4: not
+    pinned.)"""
+    from ngstpm import unfitted_domain
+    mesh = carved_mesh("structured", 7, 3.0)
+    paths, dropped = [], []
+    for side in (1, 2):
+        D0 = unfitted_domain(mesh, ball, side)[0]
+        D, F, _ = unfitted_domain(mesh, ball, side, max_normal_deviation=85)
+        assert all(D0[e] for e in range(mesh.ne) if D[e])                # a subset
+        dropped.append(sum(D0) - sum(D))
+        paths.append(transfer_paths(mesh, ball, D, facets=F))
+    assert dropped == [8, 0]
+    r = check(pair(*paths), *paths)
+    assert_pairing(r, sliver=10 * MERGE_TOL, side_tiling=1e-10)
+    assert r["over"] < 0.02
+
+
 @pytest.mark.parametrize("kind,n,msg", [("structured", 7, r"the paths of Gamma_h\^1 fold at the face .* same side"),
                                         ("netgen", 0.4, r"Gamma_h\^1 is not a surface .* \(4 faces meet\)")])
 def test_carved_raises(kind, n, msg):
