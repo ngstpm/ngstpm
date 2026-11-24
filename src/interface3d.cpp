@@ -812,7 +812,7 @@ void Interface::Rule3D (int side, size_t s, int intorder, Array<IfcPoint> & pts,
           if (!(L2Norm (res) <= 1e-11 * scale && overshoot (u) <= gap))
             {
               // D14 absorption (as in 2D): the point of F', extended by the gap (overshoot <= gap),
-              // whose path line passes closest to xbar, on a barycentric lattice refined once
+              // whose path line passes closest to xbar, on a barycentric lattice refined twice
               // around its best point; accepted up to the gap
               double ext = gap / min2 (hgt[0], min2 (hgt[1], hgt[2])), rmin = 1e300;
               const int n = 24, m = 6;
@@ -826,10 +826,13 @@ void Interface::Rule3D (int side, size_t s, int intorder, Array<IfcPoint> & pts,
               for (int a = 0; a <= n; a++)
                 for (int b = 0; a + b <= n; b++)
                   test (Vec<2> (-ext + step * a, -ext + step * b));
-              Vec<2> u0 = u;
-              for (int a = -m; a <= m; a++)
-                for (int b = -m; b <= m; b++)
-                  test (Vec<2> (u0(0) + step * a / m, u0(1) + step * b / m));
+              for (int q : { m, m * m })                  // refined twice, m times finer each
+                {
+                  Vec<2> u0 = u;
+                  for (int a = -m; a <= m; a++)
+                    for (int b = -m; b <= m; b++)
+                      test (Vec<2> (u0(0) + step * a / q, u0(1) + step * b / q));
+                }
               if (rmin > gap)
                 throw Exception ("pair: unpaired piece of Gamma_h^" + ToString (side + 1) + " (side "
                                  + ToString (side + 1) + ") at " + Pt3 (pt.x) + ": its path ends at " + Pt3 (pt.xbar)

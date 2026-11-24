@@ -415,7 +415,7 @@ def test_absorption(shift):
     to 2 shift). Where no point of F' has its path line through xbar, x' is the point
     of F', at most GAP_TOL h outside it, whose line passes closest. Measured at shift
     0.03 = 0.08 h: 76 and 98 of about 2370 points (order 6, side 1 and 2) absorbed,
-    missing by up to 2.4e-2 h and 3.7e-2 h; at 0.04 the miss exceeds GAP_TOL h."""
+    missing by up to 2.4e-2 h and 3.6e-2 h; at 0.04 the miss exceeds GAP_TOL h."""
     p1 = slab_side(slab_mesh(0.3, 0.33), "slab", 0.3, "bottom")
     p2 = tilted_side(shift, 0.25)
     if shift > 0.035:
