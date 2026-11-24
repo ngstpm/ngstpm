@@ -48,12 +48,14 @@ def test_cn_euler_start_rates():
         assert 0.9 < rs < 1.15 and 0.9 < rp < 1.15, (rs, rp)
 
 
-def test_space_rates_cn():
+@pytest.mark.parametrize("case", ["dirichlet", "mixed"])
+def test_space_rates_cn(case):
     """k = 1, dt = h^2 (sigma, p are O(dt) after the Euler start): rates about 2 for sigma, u,
-    p and 3 for u**; Picard converges at every step."""
+    p and 3 for u**; Picard converges at every step. mixed: do-nothing on right|top, where
+    u . n = cos t > 0."""
     E = []
     for h in (0.2, 0.1):
-        _, e, ex = nt.row("dirichlet", 1, h, h * h, 0.16)[1:]
+        _, e, ex = nt.row(case, 1, h, h * h, 0.16)[1:]
         assert not ex["failed"] and ex["max_iter"] <= 6
         E.append(e)
     r = dict(zip(nt.COLUMNS, rates(E)[0]))
