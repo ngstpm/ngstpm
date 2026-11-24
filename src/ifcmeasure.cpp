@@ -354,6 +354,8 @@ struct LocalSolvers                      // H and S of a condensed, assembled Bi
       }
     FlatMatrix<double> m(grows.Size(), out.Size(), lh);
     m = 0.0;
+    Array<int> sels;                  // the elements of S of the local columns, and -C_l S on each
+    Array<double*> R;
     for (size_t j = 0; j < cols.Size(); j++)
       {
         DofId d = cols[j];
@@ -364,12 +366,28 @@ struct LocalSolvers                      // H and S of a condensed, assembled Bi
         for (size_t k = 0; k < hc.Size(); k++)
           if (IsRegularDof(hc[k])) m.Col(out.Pos(hc[k])) += Hb(hpos[d], k) * elmat.Col(j);
         auto Sb = S->GetElementMatrix(sel[d]);
-        auto sc = S->GetElementColumnDNums(sel[d]);
+        size_t nsc = S->GetElementColumnDNums(sel[d]).Size();
+        int e = sels.Pos (sel[d]);
+        if (e < 0)
+          {
+            e = sels.Size(); sels.Append (sel[d]);
+            R.Append (lh.Alloc<double> (grows.Size() * nsc));
+            FlatMatrix<double> (grows.Size(), nsc, R[e]) = 0.0;
+          }
+        FlatMatrix<double> Re(grows.Size(), nsc, R[e]);
         for (size_t i = 0; i < grows.Size(); i++)
           if (IsRegularDof(grows[i]) && elmat(i, j) != 0.0)
+            Re.Row(i) -= elmat(i, j) * Sb.Row(spos[d]);
+      }
+    for (size_t e = 0; e < sels.Size(); e++)     // one triplet per (row, column) and element
+      {
+        auto sc = S->GetElementColumnDNums(sels[e]);
+        FlatMatrix<double> Re(grows.Size(), sc.Size(), R[e]);
+        for (size_t i = 0; i < grows.Size(); i++)
+          if (IsRegularDof(grows[i]))
             for (size_t k = 0; k < sc.Size(); k++)
-              if (IsRegularDof(sc[k]) && Sb(spos[d], k) != 0.0)
-                { ri.Append (grows[i]); rj.Append (sc[k]); rv.Append (-elmat(i, j) * Sb(spos[d], k)); }
+              if (IsRegularDof(sc[k]) && Re(i, k) != 0.0)
+                { ri.Append (grows[i]); rj.Append (sc[k]); rv.Append (Re(i, k)); }
       }
     return m;
   }
