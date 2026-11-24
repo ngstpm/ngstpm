@@ -25,7 +25,8 @@ across the paths): the two-mesh, fitted, open-surface and absorption cases have
 m = 1 on every face (asserted), and on the sphere (0.5, 0.35), the cylinder
 (0.2, 0.3) and the fitted one-mesh case the segments and rules are bitwise those
 without subdivision (order 6; measured, pair 0.91 s on that sphere before and
-after). Carved sides of
+after; none of their points is absorbed: absorbed points elsewhere move with the
+refined lattice, and the fold checks raise at m = 1 too). Carved sides of
 one background mesh (unit sphere, box half-width about 1.5; measured, the larger
 ones not in the suite): structured n = 6, 8, 12 and netgen maxh 0.3 (h = 0.62,
 0.47, 0.31, 0.42) pair, m from 1 to 8 (mostly 2, 4), x' at most 4.6e-3, 1.0e-2,
