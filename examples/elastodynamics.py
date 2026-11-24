@@ -25,6 +25,26 @@ Port of the MATLAB solid (LinearElasticityProblem, time_scheme "newmark"):
   one-sided traces of a, and its (sigma, gamma) blocks are lifted from (a, ahat) by the first
   two rows.
 Difference from MATLAB: tau_S = tau mu, as in elasticity.py (tau = 1/mu gives MATLAB's 1).
+
+VelocityStress: the stress-velocity-rotation form (no MATLAB counterpart), unknowns sigma,
+v = eta', omega = gamma', vhat in the spaces of elasticity.py,
+
+    rho v' + b0 eta - div sigma = f,   A sigma' = grad v - S(omega),   v = g' on Gamma,
+
+with the HDG rows of elasticity.py for (A sigma', v, omega, vhat) and the flux
+sigma_hat n = sigma n - tau_S (v - vhat), tau_S = tau sqrt(rho mu) (an impedance; it damps).
+Time: Crank-Nicolson on every row (Meddahi 2025, (40)), solved for the midpoint values
+y = (y^n + y^{n+1})/2 with the masses 2/dt (A sigma, tau) and (2 rho/dt + b0 dt/2) (v, w):
+
+    (2/dt) (A sigma, tau) + [rows of tau] = (2/dt) (A sigma^n, tau),
+    (2 rho/dt + b0 dt/2) (v, w) + [rows of w] = (f^{n+1/2}, w) + (2 rho/dt) (v^n, w) - b0 (eta^n, w),
+    TPM: vhat + ((2/dt) A sigma + S(omega)).PathIntegral = g'^{n+1/2}(xbar) + (2/dt) (A sigma^n).PathIntegral,
+
+data averaged over t^n, t^{n+1}; then y^{n+1} = 2 y - y^n for every dof, and the displacement
+by the trapezoid rule eta^{n+1} = eta^n + dt v (eta^{n+1/2} = eta^n + dt/2 v in the b0 term).
+Start (Meddahi (41)): L2 projections sigma^0 = Pi sigma(0) (onto the whole stress space
+P_k^{2x2} + curl(B_K); its P_k part alone gives O(h^{k+1}/dt) in the first step, omega of order k),
+v^0 = Pi eta'(0), omega^0 = Pi gamma'(0), vhat^0 = P_M eta'(0), eta^0 = Pi eta(0).
 """
 from ngsolve import *
 
@@ -234,20 +254,165 @@ def run(mesh, order, eta, mat, dt, nsteps, monitor=None, **kw):
     return r
 
 
+class VelocityStress(Elastodynamics):
+    """The stress-velocity-rotation form by Crank-Nicolson: the state U = (sigma, v, omega,
+    vhat) at t^n and the displacement eta^n in the v block of E. Arguments as Elastodynamics
+    (g: the displacement on Gamma; the datum is g')."""
+
+    def __init__(self, mesh, order, mat, f, g, dt, phi=None, D=None, dirichlet=".*", tau=1.0, full=True):
+        self.mesh, self.order, self.mat, self.f, self.dt = mesh, order, mat, f, dt
+        self.g = g.Diff(t)                                           # the velocity datum
+        self.phi, self.dirichlet, self.tau, self.full = phi, dirichlet, tau, full
+        if phi is not None:
+            D = unfitted_domain(mesh, phi)[0] if D is None else D
+            self.paths = transfer_paths(mesh, phi, D, order=order + 4)
+        self.D = D
+        self.fes, self.top = spaces(mesh, order, dirichlet, D)
+        self.trial, self.test = self.fes.TnT()
+        self.dV = dx(definedonelements=D)
+        lam, mu, rho, b0 = (mat[k] for k in ("lam", "mu", "rho", "b0"))
+        self.tauS = tau * (rho * mu) ** 0.5
+
+        self.lhs = self.bilinear(2 / dt, 2 * rho / dt + b0 * dt / 2)
+        self.load = self.linear(f, self.g)
+        sP, w1, w2, v = self.trial[:4]
+        sigma = stress(sP, w1, w2)
+        self.H = BilinearForm(self.fes)                              # the old-state terms
+        self.H += (2 / dt) * (InnerProduct(compliance(sigma, lam, mu), stress(*self.test[:3]))
+                              + rho * v * self.test[3]) * self.dV
+        if phi is not None:
+            s = sigma if full else sP
+            self.H += (2 / dt) * compliance(s, lam, mu).PathIntegral(self.paths) * self.test[5] * self._dB()
+        self.B0 = BilinearForm(self.fes)
+        self.B0 += b0 * v * self.test[3] * self.dV
+        for a in (self.H, self.B0):
+            a.Assemble()
+        self.free = free_dofs(self.fes, self.top, True)
+        self.Ainv = self.factor(self.lhs)
+
+        self.gfu = GridFunction(self.fes)
+        self.U, self.E, self.F = (self.gfu.vec.CreateVector() for _ in range(3))
+        for v in (self.U, self.E, self.F):
+            v[:] = 0
+        self.time, self.steps = 0.0, 0
+
+    def bilinear(self, cs, cm):
+        """The HDG rows of (sigma, v, omega, vhat) with cs (A sigma, tau) and cm (v, w)."""
+        mesh, D, (lam, mu) = self.mesh, self.D, (self.mat["lam"], self.mat["mu"])
+        (sP, w1, w2, v, om, vhat), (tP, z1, z2, w, xi, muh) = self.trial[:6], self.test[:6]
+        n = specialcf.normal(2)
+        dV, dS = self.dV, dx(element_boundary=True, definedonelements=D)
+        sigma, tau_ = stress(sP, w1, w2), stress(tP, z1, z2)
+        sigmahat_n = sigma * n - self.tauS * (v - vhat)
+        lhs = BilinearForm(self.fes, condense=True)
+        lhs += (cs * InnerProduct(compliance(sigma, lam, mu), tau_) - InnerProduct(grad(v), tau_)
+                + InnerProduct(skew(om), tau_)) * dV + (v - vhat) * (tau_ * n) * dS
+        lhs += InnerProduct(sigma, skew(xi)) * dV
+        lhs += cm * v * w * dV + InnerProduct(sigma, grad(w)) * dV - sigmahat_n * w * dS
+        if self.phi is None:
+            lhs += sigmahat_n * muh * dx(element_boundary=True)      # muh vanishes on Dirichlet faces
+        else:
+            lhs += sigmahat_n * muh * interior_ds(mesh, D)
+            s = sigma if self.full else sP
+            lhs += vhat.Transfer(self.paths, gradient=cs * compliance(s, lam, mu) + skew(om)) * muh * self._dB()
+        return lhs
+
+    def step(self):
+        """One Crank-Nicolson step to t^{n+1}."""
+        dt = self.dt
+        t.Set(self.time + dt)
+        self.load.Assemble()
+        b = self.load.vec.CreateVector()
+        b.data = 0.5 * (self.load.vec + self.F) + self.H.mat * self.U - self.B0.mat * self.E
+        self.F.data = self.load.vec
+        y = self.U.CreateVector()
+        self.solve(self.lhs, self.Ainv, b, 0.5 * (self.g + self.g.Replace({t: t - dt})), y)
+        self.U.data *= -1                  # U.data = 2 y - U would alias (U := 2 y first)
+        self.U.data += 2 * y
+        self.E.data += dt * y              # only the v block is read
+        self.time += dt
+        self.steps += 1
+
+    def initial_state(self, eta):
+        """Meddahi (41): L2 projections at t = 0 of the exact fields of the displacement eta."""
+        t.Set(0.0)
+        sigma, gamma, _ = el.manufactured(eta, self.mat["lam"], self.mat["mu"])
+        gf = GridFunction(self.fes)
+        gf.vec[:] = 0
+        c = gf.components
+        (sP, w1, w2), tests = self.trial[:3], stress(*self.test[:3])
+        mass = BilinearForm(InnerProduct(stress(sP, w1, w2), tests) * self.dV).Assemble()
+        load = LinearForm(InnerProduct(sigma, tests) * self.dV).Assemble()
+        free = free_dofs(self.fes, self.top, False, free=self._block(0, 1, 2))
+        gf.vec.data = mass.mat.Inverse(free, inverse="umfpack") * load.vec    # onto P_k + curl(B_K)
+        c[3].Set(eta.Diff(t), definedonelements=self.D)
+        c[4].Set(gamma.Diff(t), definedonelements=self.D)
+        facet_projection(c[5], eta.Diff(t), self.D)
+        self.U.data = gf.vec
+        gf.vec[:] = 0
+        c[3].Set(eta, definedonelements=self.D)
+        self.E.data = gf.vec
+        self.load.Assemble()
+        self.F.data = self.load.vec
+        self.time, self.steps = 0.0, 0
+
+    def fields(self, vec=None):
+        """(sigma_h, v_h, omega_h, vhat_h, eta_h) of vec (default U) and E."""
+        gf, ge = GridFunction(self.fes), GridFunction(self.fes)
+        gf.vec.data = self.U if vec is None else vec
+        ge.vec.data = self.E
+        c = gf.components
+        c[3].gfu = gf
+        return stress(*c[:3]), c[3], c[4], c[5], ge.components[3]
+
+    def errors(self, eta):
+        """L2(D_h) errors of sigma, v, omega, eta and |v - vhat|_h at the current t."""
+        sigma, gamma, _ = el.manufactured(eta, self.mat["lam"], self.mat["mu"])
+        sigma_h, v_h, om_h, vhat_h, eta_h = self.fields()
+        v = eta.Diff(t)
+        dV = dx(definedonelements=self.D, bonus_intorder=4)
+        dS = dx(element_boundary=True, definedonelements=self.D, bonus_intorder=4)
+        l2 = lambda a: sqrt(Integrate(InnerProduct(a, a) * dV, self.mesh))
+        h = specialcf.mesh_size
+        return (l2(sigma_h - sigma), l2(v_h - v), l2(om_h - gamma.Diff(t)), l2(eta_h - eta),
+                sqrt(Integrate(h * InnerProduct(v - vhat_h, v - vhat_h) * dS, self.mesh)))
+
+    def energy(self):
+        """(1/2) ((A sigma, sigma) + rho |v|^2 + b0 |eta|^2) on D_h."""
+        sigma_h, v_h, _, _, eta_h = self.fields()
+        m = self.mat
+        dV = dx(definedonelements=self.D, bonus_intorder=4)
+        return 0.5 * Integrate((InnerProduct(compliance(sigma_h, m["lam"], m["mu"]), sigma_h)
+                                + m["rho"] * v_h * v_h + m["b0"] * eta_h * eta_h) * dV, self.mesh)
+
+
+VCOLUMNS = ("|s-sh|", "|v-vh|", "|w-wh|", "|e-eh|", "|v-vh^|h")
+
+
+def run_velocity(mesh, order, eta, mat, dt, nsteps, monitor=None, **kw):
+    """VelocityStress march of nsteps from the L2-projected start for the exact displacement eta."""
+    r = VelocityStress(mesh, order, mat, manufactured(eta, mat), eta, dt, **kw)
+    r.initial_state(eta)
+    r.march(nsteps, monitor)
+    return r
+
+
 SMOOTH = CF((sin(pi * (x + t)) * cos(pi * y), cos(pi * x) * sin(pi * (y - t))))
 CASES = ("fitted", "Example 2 (unfitted disk)", "Example 3 (kidney)")
 
 
-def study(case, order, hs, T=0.5, mat=None, record=None):
-    """Space-time EOC table at t = T for SMOOTH, dt = T/ceil(T/h)."""
+def study(case, order, hs, T=0.5, mat=None, record=None, form="displacement"):
+    """Space-time EOC table at t = T for SMOOTH, dt = T/ceil(T/h); form: "displacement"
+    (Newmark, Elastodynamics) or "velocity" (Crank-Nicolson, VelocityStress)."""
     from math import ceil
     from netgen.geom2d import unit_square
     from elasticity import eoc_line
     from elasticity_tpm import EXAMPLES, domain
 
     mat = material() if mat is None else mat
-    print(f"{case}, k = {order}, T = {T}, {mat}")
-    print(f"  {'h':>7}" + "".join(f"  {c:>9}  eoc " for c in COLUMNS) + "      dt")
+    columns, march = (COLUMNS, run) if form == "displacement" else (VCOLUMNS, run_velocity)
+    print(f"{case}, {form} form, k = {order}, T = {T}, {mat}")
+    print(f"  {'h':>7}" + "".join(f"  {c:>9}  eoc " for c in columns) + "      dt")
     prev, rows = None, []
     for h in hs:
         nsteps = ceil(T / h)
@@ -257,7 +422,7 @@ def study(case, order, hs, T=0.5, mat=None, record=None):
             phi = EXAMPLES[case]
             mesh, D, dirichlet, _ = domain(case, h, phi)
             kw = dict(phi=phi, D=D, dirichlet=dirichlet)
-        r = run(mesh, order, SMOOTH, mat, T / nsteps, nsteps, **kw)
+        r = march(mesh, order, SMOOTH, mat, T / nsteps, nsteps, **kw)
         e = r.errors(SMOOTH)
         print(eoc_line(h, e, prev) + f"  {T / nsteps:6.4f}")
         if record is not None:
@@ -272,12 +437,15 @@ if __name__ == "__main__":
 
     p = parser(__doc__, list(CASES))
     p.add_argument("--T", type=float, default=0.5, help="final time (default 0.5)")
+    p.add_argument("--form", choices=("displacement", "velocity"), default="displacement",
+                   help="displacement (Newmark, default) or velocity (Crank-Nicolson)")
     a = parse(p)
     if a.k is None:
-        run_defaults(__file__, [["--case", c, "--k", k, "--h", *hs] for c in CASES
+        run_defaults(__file__, [["--case", c, "--form", f, "--k", k, "--h", *hs] for c in CASES
+                                for f in ("displacement", "velocity")
                                 for k, hs in ((1, (0.2, 0.1, 0.05)), (2, (0.2, 0.1, 0.05)))])
     else:
-        record = Record(COLUMNS)
-        study(a.case, a.k, a.h, T=a.T, record=record)
+        record = Record(COLUMNS if a.form == "displacement" else VCOLUMNS)
+        study(a.case, a.k, a.h, T=a.T, record=record, form=a.form)
         if a.out:
-            save(a.out, record, dict(driver="elastodynamics", case=a.case, k=a.k, T=a.T, **material()))
+            save(a.out, record, dict(driver="elastodynamics", case=a.case, form=a.form, k=a.k, T=a.T, **material()))

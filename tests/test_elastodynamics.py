@@ -3,7 +3,7 @@ from math import log2
 from pathlib import Path
 
 import pytest
-from ngsolve import CF, GridFunction, InnerProduct, Integrate, VectorL2, dx, sqrt, x, y
+from ngsolve import CF, GridFunction, InnerProduct, Integrate, VectorL2, dx, pi, sin, sqrt, x, y
 from ngsolve.meshes import MakeStructured2DMesh
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "examples"))
@@ -74,3 +74,50 @@ def eocs(case, k, hs, T=0.5):
 def test_rates(case):
     r = eocs(case, 1, (1 / 8, 1 / 16) if case == "fitted" else (0.1, 0.05))
     assert min(r[0], r[1], r[2]) > 1.8 and r[8] > 1.4, r
+
+
+# ---- VelocityStress (Crank-Nicolson) -----------------------------------------------------------
+
+def vpoly(k):
+    """Degree k in space, quadratic in t (v, sigma' linear): Crank-Nicolson is exact."""
+    return POLY[k] * (1 + t + t * t / 2) + CF((y, -x)) * t * t
+
+
+@pytest.mark.parametrize("case, h", [("fitted", 1 / 3), (TPM, 0.3)])
+@pytest.mark.parametrize("k", [1, 2])
+def test_velocity_exact_polynomial(case, h, k):
+    """Every column (sigma, v, omega, eta, vhat) at every step to roundoff."""
+    mesh, kw = setting(case, h)
+    worst = []
+    ed.run_velocity(mesh, k, vpoly(k), MAT, 0.1, 4, monitor=lambda r: worst.append(max(r.errors(vpoly(k)))), **kw)
+    assert len(worst) == 4 and max(worst) < 1e-9
+
+
+def test_velocity_energy_decays():
+    """f = 0, g = 0, b0 > 0: the energy (A sigma, sigma) + rho |v|^2 + b0 |eta|^2 never grows
+    (Crank-Nicolson conserves it; tau_S (v - vhat) dissipates)."""
+    mesh, _ = setting("fitted", 0.125)
+    eta0 = CF((sin(pi * x) * sin(pi * y), x * y * (1 - x) * (1 - y))) * (1 + t)
+    r = ed.VelocityStress(mesh, 1, MAT, CF((0, 0)), CF((0, 0)) * t, 0.05)
+    r.initial_state(eta0)
+    E = [r.energy()]
+    r.march(10, lambda r: E.append(r.energy()))
+    assert E[0] > 0.1 and all(b <= a * (1 + 1e-12) for a, b in zip(E, E[1:])) and E[-1] < E[0]
+
+
+def veocs(case, k, hs, T=0.5):
+    rows = []
+    for h in hs:
+        mesh, kw = setting(case, h)
+        n = round(T / h)
+        rows.append(ed.run_velocity(mesh, k, ed.SMOOTH, MAT, T / n, n, **kw).errors(ed.SMOOTH))
+    return [log2(a / b) for a, b in zip(*rows)]
+
+
+# k = 1, dt = h, T = 0.5: space-time order 2 for sigma, v, eta, vhat. omega is order k only (not
+# asserted; fitted unit_square, h 0.2 -> 0.025: 1.14, 0.86, 1.13), also with dt << h and for
+# tau from 0.01 to 10; the Newmark gamma has k + 1.
+@pytest.mark.parametrize("case", ["fitted", TPM])
+def test_velocity_rates(case):
+    r = veocs(case, 1, (1 / 8, 1 / 16) if case == "fitted" else (0.1, 0.05))
+    assert min(r[0], r[1], r[3]) > 1.8, r
