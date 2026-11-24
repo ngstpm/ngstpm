@@ -28,15 +28,31 @@ def pair(p1, p2):
 
     And in 3D (tetrahedra, straight triangular faces): a segment is a pair of
     faces (F, F'); each side's pieces are polygons on its faces, clipped in the
-    chart of the face (the plane of the triangle on its vertices' path ends)
-    against the other side's image triangles (the sides lie on either side of
-    Gamma: only those whose outward normals are opposed to the face's; and the
-    path of a partner x' must end within GAP_TOL * h of xbar), and they tile Gamma_h^i face by
-    face (else raises: unpaired piece, or overlapping paths). h is the larger
-    of the two sides' mean edge lengths of Gamma_h (2D: of Gamma_h^1 only);
-    pieces below MERGE_TOL * h^2 are dropped; GAP_TOL * h bounds how far x'
-    lies outside F' and is the depth of the strips that pair the rims of open
-    surfaces."""
+    chart of the face (the plane normal to the mean path direction at its
+    vertices) against the other side's image triangles T_F' (on the path ends
+    of the vertices of F'; the sides lie on either side of Gamma: only those
+    oriented opposite to the face's), and they tile Gamma_h^i face by face
+    (else raises: unpaired piece, or overlap); the path of a partner x' must
+    end within GAP_TOL * h of xbar. h is the larger of the two sides' mean
+    edge lengths of Gamma_h (2D: of Gamma_h^1 only); pieces below
+    MERGE_TOL * h^2 are dropped; GAP_TOL * h bounds how far x' lies outside
+    F' and is the depth of the strips that pair the rims of open surfaces.
+
+    The conditions in 3D, for each side: (1) Gamma_h^i is a surface (at most
+    two faces at an edge), closed or with rims whose path ends match the
+    other side's within GAP_TOL * h; (2) the path map x -> xbar_i is
+    injective on Gamma_h^i and does not fold: no face whose outward normal
+    is on the wrong side of sigma_i, and every T_F oriented as F along the
+    paths, not parallel to them; (3) on each face the path map is affine up
+    to GAP_TOL * h, measured normal to the paths: |(I - sigma sigma^T)
+    (xbar_i(x) - T_F(x))| <= GAP_TOL * h, T_F(x) the affine interpolant of the
+    vertices' path ends (the pieces are computed from the T_F). Sides fitted
+    to Gamma or interpolating it (paths of length O(h^2)) meet (3) with
+    1e-9 h. Carved sides of one background mesh (paths of length O(h)) do
+    not: on the unit sphere 0.04 - 0.2 h at h = 0.19 - 0.48, and their
+    Gamma_h may fold or not be a surface; pair raises on them (a point
+    absorbed beyond GAP_TOL * h, an overlap near a fold, or a degenerate
+    chart)."""
     return Interface(p1.mesh, p1.elements, p1.facets, CF(p1.target), CF(p1.sigma),
                      p2.mesh, p2.elements, p2.facets, CF(p2.target), CF(p2.sigma),
                      merge_tol=MERGE_TOL, gap_tol=GAP_TOL)

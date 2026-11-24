@@ -527,7 +527,9 @@ void ExportInterface (py::module & m)
       "Pairing of two sides' transfer paths with the common subdivision of Gamma (2D and 3D).\n"
       "Built by ngstpm.pair(p1, p2). Segments: arcs of Gamma reached from exactly one facet\n"
       "F of Gamma_h^1 and one facet F' of Gamma_h^2; their pieces of F and F'. In 3D a segment\n"
-      "is a pair of faces (F, F'), its pieces are polygons (triangulated) on F and on F'.")
+      "is a pair of faces (F, F'), its pieces are polygons (triangulated) on F and on F'; it is\n"
+      "supported under the conditions in the docstring of ngstpm.pair (Gamma_h^i a surface, the\n"
+      "path maps injective without folds, affine on each face up to gap_tol h normal to the paths).")
     .def (py::init ([] (shared_ptr<MeshAccess> m1, shared_ptr<BitArray> D1, shared_ptr<BitArray> F1,
                         shared_ptr<CoefficientFunction> xb1, shared_ptr<CoefficientFunction> sg1,
                         shared_ptr<MeshAccess> m2, shared_ptr<BitArray> D2, shared_ptr<BitArray> F2,

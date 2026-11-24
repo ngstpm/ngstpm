@@ -409,3 +409,28 @@ def test_absorption(shift):
         miss = np.linalg.norm(np.cross(R["xbar"] - R["xp"], R["sigmap"]), axis=1)
         assert np.sum(miss > 1e-10) > 0.01 * len(miss)         # the absorption is reached
         assert miss.max() <= GAP_TOL * r["h"]
+
+
+@pytest.mark.parametrize("kind,n,msg", [("structured", 8, r"unpaired piece of Gamma_h\^1 \(side 1\) at .* miss by"),
+                                        ("netgen", 0.4, r"Gamma_h\^1 is not a surface")])
+def test_carved_raises(kind, n, msg):
+    """Carved sides of one background mesh (the unit sphere; the elements of D_h^i
+    inside / outside it, paths of length O(h)) are outside the conditions of pair
+    in 3D, which raises rather than pairing them. Structured, n = 8 (h = 0.47): no
+    fold, but the path map is affine on the faces only up to 0.15 h normal to the
+    paths, so a rule point is absorbed beyond GAP_TOL h (miss 0.0241 > 0.0235).
+    Netgen, maxh 0.4: 4 faces of Gamma_h^1 meet at an edge."""
+    from ngstpm import unfitted_domain
+    if kind == "structured":
+        mesh = MakeStructured3DMesh(hexes=False, nx=n, ny=n, nz=n,
+                                    mapping=lambda X, Y, Z: (3.1 * X - 1.53, 3.1 * Y - 1.56, 3.1 * Z - 1.55))
+    else:
+        geo = CSGeometry()
+        geo.Add(OrthoBrick(Pnt(-1.5, -1.5, -1.5), Pnt(1.5, 1.5, 1.5)))
+        mesh = Mesh(geo.GenerateMesh(maxh=n))
+    paths = []
+    for side in (1, 2):
+        D, F, _ = unfitted_domain(mesh, ball, side)
+        paths.append(transfer_paths(mesh, ball, D, facets=F))
+    with pytest.raises(Exception, match=msg):
+        pair(*paths)
