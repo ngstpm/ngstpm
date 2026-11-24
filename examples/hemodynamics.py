@@ -211,6 +211,20 @@ def benchmark(maxh=0.1, order=2, dt=1e-4, nsteps=120, snapshots=None, mat=MATERI
     return run, snaps, rss, dict(setup=t_setup, march=t_march)
 
 
+def print_table(snaps, dt):
+    """One row per snapshot of snaps (as returned by benchmark): for each profile its largest
+    value and where (x) it is reached, and the smallest d_y."""
+    print(f"  {'t (ms)':>6}" + "".join(f"  {c:>11}  {'at x':>6}" for c in ("max flow", "max p", "max d_y"))
+          + f"  {'min d_y':>11}")
+    for n in sorted(snaps):
+        line = f"  {1e3 * n * dt:6g}"
+        for name in PROFILES:
+            X, V = snaps[n][name]
+            i = int(np.argmax(V))
+            line += f"  {V[i]:11.5g}  {X[i]:6.3f}"
+        print(line + f"  {snaps[n]['displacement'][1].min():11.5g}")
+
+
 def save_run(path, run, snaps, rss, timing, params):
     """PATH.npz: the profiles (double precision) per snapshot step, the snapshot steps and times,
     the parameters (JSON), the dof vector of each snapshot state, the RSS per step; the mesh as
@@ -250,6 +264,7 @@ if __name__ == "__main__":
           f"S_F = mu_F, S_S = {a.S_solid:g}, solver {a.solver}", flush=True)
     snapshots = snapshot_steps(a.dt)
     run, snaps, rss, timing = benchmark(a.h[0], a.k, a.dt, nsteps, snapshots, mat, a.S_solid, a.solver)
+    print_table(snaps, a.dt)
     if a.out:
         save_run(a.out, run, snaps, rss, timing,
                  dict(driver="hemodynamics", k=a.k, h=a.h[0], dt=a.dt, steps=nsteps, material=mat,
