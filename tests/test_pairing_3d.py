@@ -2,21 +2,28 @@
 chart of each face, the per-face coverage check and the partner rules.
 
 Tolerances (ngstpm.interface; in 3D relative to h = the larger of the two
-sides' mean edge lengths of Gamma_h), measured on the configurations below:
-- pieces below MERGE_TOL h^2 = 1e-10 h^2 are dropped; on the two-mesh sphere
-  the largest dropped sliver was 3.0e-11 h^2 (h1 = 0.2, h2 = 0.6), so the
-  pieces of a side tile Gamma_h^i to 6.6e-13 relative there and to 5e-15
-  elsewhere;
+sides' mean edge lengths of Gamma_h), measured on the configurations below
+(sphere: ball and box minus ball meshed on their own; cylinder: open surface):
+- pieces below MERGE_TOL h^2 = 1e-10 h^2 are dropped. Slivers that small
+  appear where vertices of the two sides (nearly) coincide: on the sphere up to
+  3.0e-11 h^2 (h1 = 0.2, h2 = 0.6; elsewhere < 1e-17 h^2), at the rims of the
+  cylinder 9.9e-11 h^2, and with vertices moved by eps h from 1e-10 h^2 per
+  face. A side's pieces tile Gamma_h^i to 5e-15 relative without such slivers,
+  6.6e-13 (sphere), 4.7e-12 (cylinder) and 1.7e-10 (eps = 1e-10) with them;
 - vertex images of one side (one per face at the vertex) differ by at most
-  8.2e-9 h (two-mesh sphere);
-- the partner x' of a rule point lies at most 1.5e-2 h outside its face F'
-  (two-mesh sphere, h1 = 0.2, h2 = 0.6; 1.2e-2 h at h ratio 1 to 1.7), against
-  GAP_TOL = 5e-2 h.
+  8.2e-9 h (sphere; measured with a temporary diagnostic);
+- the partner x' of a rule point lies at most 1.5e-2 h outside its face F' on
+  the sphere at h ratios 1 to 3.8 (h = 0.47, 0.48), 2.7e-2 h with a coarse side of
+  58 faces (h = 0.70), 5.5e-3 h on the cylinder: GAP_TOL = 5e-2 h leaves a margin
+  of 1.9 in the worst case. The rim strips (depth GAP_TOL h) cover at most
+  1e-3 h^2 per face on the cylinder.
 """
+
+from functools import lru_cache
 
 import numpy as np
 import pytest
-from netgen.csg import CSGeometry, OrthoBrick, Pnt, Sphere
+from netgen.csg import CSGeometry, Cylinder, OrthoBrick, Plane, Pnt, Sphere, Vec
 from ngsolve import BitArray, CF, Integrate, Mesh, VOL, ds, sqrt, x, y, z
 from ngsolve.meshes import MakeStructured3DMesh
 
@@ -28,19 +35,27 @@ def ball(X, Y, Z):
     return sqrt(X * X + Y * Y + Z * Z) - 1
 
 
-def sphere_meshes(h1, h2):
-    """The unit ball (maxh h1) and the box minus the ball (maxh h2 on the sphere),
-    meshed on their own: the bc "interface" on both."""
+def sphere_meshes(h1, h2, curvaturesafety=2):
+    """The unit ball (maxh h1) and the box minus the ball (maxh h2 on the sphere;
+    curvaturesafety < 2 allows coarser faces), meshed on their own: the bc
+    "interface" on both."""
     g1 = CSGeometry()
     g1.Add(Sphere(Pnt(0, 0, 0), 1).bc("interface"))
     g2 = CSGeometry()
     g2.Add(OrthoBrick(Pnt(-1.5, -1.5, -1.5), Pnt(1.5, 1.5, 1.5)).bc("outer")
            - Sphere(Pnt(0, 0, 0), 1).bc("interface").maxh(h2))
-    return Mesh(g1.GenerateMesh(maxh=h1)), Mesh(g2.GenerateMesh(maxh=max(h2, 0.5)))
+    return Mesh(g1.GenerateMesh(maxh=h1)), Mesh(g2.GenerateMesh(maxh=max(h2, 0.5), curvaturesafety=curvaturesafety))
 
 
 def two_mesh_paths(m1, m2, phi=ball):
     return [transfer_paths(m, phi, facets=m.Boundaries("interface")) for m in (m1, m2)]
+
+
+@lru_cache
+def sphere_paths(h1, h2, curvaturesafety=2):
+    """The paths of sphere_meshes(h1, h2, curvaturesafety) (transfer_paths dominates
+    the run time); tests must not modify them."""
+    return tuple(two_mesh_paths(*sphere_meshes(h1, h2, curvaturesafety)))
 
 
 def fitted_paths(h):
@@ -100,7 +115,8 @@ def check(I, p1, p2):
         G = np.array([fd[j][S.facet[s, j]] for s in R["seg"]])
         # x' in the reference coordinates of F', and how far outside F'
         E = np.stack([G[:, 1] - G[:, 0], G[:, 2] - G[:, 0]], axis=2)
-        lam = np.array([np.linalg.lstsq(e, d, rcond=None)[0] for e, d in zip(E, R["xp"] - G[:, 0])])
+        Et = np.transpose(E, (0, 2, 1))
+        lam = np.linalg.solve(Et @ E, (Et @ (R["xp"] - G[:, 0])[..., None]))[..., 0]
         onface = max(onface, np.abs(G[:, 0] + np.einsum("nij,nj->ni", E, lam) - R["xp"]).max())
         bary = np.column_stack([1 - lam.sum(1), lam])
         hgt = np.stack([2 * tri_area(G) / np.linalg.norm(G[:, (k + 2) % 3] - G[:, (k + 1) % 3], axis=1)
@@ -110,23 +126,23 @@ def check(I, p1, p2):
     return dict(nseg=n, h=h, defect=defect, side_tiling=side_tiling, inref=inref, onface=onface, over=over, par=par)
 
 
-def assert_pairing(r, sliver=0.0):
-    """sliver: the area (in h^2) of the slivers that may be dropped on a face."""
+def assert_pairing(r, sliver=0.0, side_tiling=1e-12):
+    """sliver: the area (in h^2) of the slivers that may be dropped on a face;
+    side_tiling: the relative defect of a side's pieces that this allows."""
     assert r["defect"] <= sliver           # per face: |area of the pieces - |F|| <= 1e-12 |F| + sliver h^2
-    assert r["side_tiling"] < 1e-12        # per side, relative
+    assert r["side_tiling"] < side_tiling  # per side, relative
     assert r["inref"] < 1e-12            # the triangles of a piece lie in the reference triangle of F
     assert r["onface"] < 1e-12           # tri_x on F, x' on the plane of F'
     assert r["over"] < GAP_TOL           # x' in F', up to the gap
     assert r["par"] < 1e-10              # xbar - x' parallel to sigma(x')
 
 
-@pytest.mark.parametrize("h1,h2", [(0.5, 0.5), (0.5, 0.35), (0.35, 0.5)])
-def test_two_meshes(h1, h2):
-    """Ball and box-minus-ball meshed on their own: each side's pieces tile its
-    Gamma_h; with equal maxh netgen meshes the sphere alike, and each face is
-    paired with its twin only."""
-    m1, m2 = sphere_meshes(h1, h2)
-    p1, p2 = two_mesh_paths(m1, m2)
+@pytest.mark.parametrize("h1,h2,order", [(0.5, 0.5, 1), (0.5, 0.35, 1), (0.5, 0.35, -1)])
+def test_two_meshes(h1, h2, order):
+    """Ball and box-minus-ball meshed on their own (order -1: the box minus the
+    ball is side 1): each side's pieces tile its Gamma_h; with equal maxh netgen
+    meshes the sphere alike, and each face is paired with its twin only."""
+    p1, p2 = sphere_paths(h1, h2)[::order]
     I = pair(p1, p2)
     r = check(I, p1, p2)
     assert_pairing(r, sliver=10 * MERGE_TOL)
@@ -151,7 +167,7 @@ def test_fitted_one_mesh():
 
 def test_equal_copies():
     """Two copies of one mesh (two meshes for pair): each face paired with its copy, x' = x."""
-    m = Mesh(sphere_meshes(0.5, 0.5)[0].ngmesh)
+    m = sphere_paths(0.5, 0.5)[0].mesh
     m2 = Mesh(m.ngmesh.Copy())
     p1, p2 = two_mesh_paths(m, m2)
     I = pair(p1, p2)
@@ -167,13 +183,13 @@ def test_equal_copies():
 POLYS = [CF(1), x, y * z, x * x * y, x * y * z * z + y ** 3, x ** 5 + x * y * y * z * z]
 
 
-@pytest.mark.parametrize("h1,h2", [(0.5, 0.35), (0.35, 0.5)])
-def test_integrate_exact(h1, h2):
+@pytest.mark.parametrize("order", [1, -1])
+def test_integrate_exact(order):
     """Integrate(p * I.ds(side=i)) = the integral over Gamma_h^i (NGSolve's ds on
     the bc "interface") for polynomials p of degree <= 5, the order of the rule."""
-    meshes = sphere_meshes(h1, h2)
-    I = pair(*two_mesh_paths(*meshes))
-    for side, m in zip((1, 2), meshes):
+    paths = sphere_paths(0.5, 0.35)[::order]
+    I = pair(*paths)
+    for side, m in zip((1, 2), (p.mesh for p in paths)):
         for p in POLYS:
             ref = Integrate(p * ds("interface", bonus_intorder=8), m)
             scale = Integrate(sqrt(p * p) * ds("interface", bonus_intorder=8), m)
@@ -193,3 +209,88 @@ def test_non_triangular_faces_raise():
         paths.append(type("P", (), dict(mesh=mesh, elements=D, facets=F, target=CF((x, y, z)), sigma=CF((1, 0, 0)))))
     with pytest.raises(Exception, match="not a triangle"):
         pair(*paths)
+
+
+def moved_copy(mesh, eps, seed=1):
+    """A copy of the ball mesh with its sphere vertices moved tangentially (random
+    directions) by eps h, h = 0.47 the mean edge of its surface."""
+    c = mesh.ngmesh.Copy()
+    rng = np.random.default_rng(seed)
+    for p in c.Points():
+        X = np.array(p.p)
+        if abs(np.linalg.norm(X) - 1) < 1e-8:
+            n = X / np.linalg.norm(X)
+            t = rng.normal(size=3)
+            t -= t.dot(n) * n
+            X += eps * 0.47 / np.linalg.norm(t) * t
+            for k in range(3):
+                p[k] = X[k]
+    return Mesh(c)
+
+
+@pytest.mark.parametrize("eps", [1e-14, 1e-10, 1e-6, 1e-3])
+def test_nearly_coincident(eps):
+    """Side 2 = side 1 (the ball, h = 0.5) with the sphere vertices moved by eps h:
+    slivers of width ~eps h. Measured: per face up to 1.4e-10 h^2 dropped (below
+    MERGE_TOL h^2 each; 2.4e-10 h^2 at eps = 1e-4), per side 1.7e-10 relative
+    (eps = 1e-10); x' at most 8.8e-5 h outside F' (eps = 1e-3)."""
+    p1 = sphere_paths(0.5, 0.5)[0]
+    p2 = two_mesh_paths(p1.mesh, moved_copy(p1.mesh, eps))[1]
+    r = check(pair(p1, p2), p1, p2)
+    assert_pairing(r, sliver=20 * MERGE_TOL, side_tiling=1e-9)
+    assert r["over"] < 1e-3
+
+
+@pytest.mark.parametrize("order", [1, -1])
+def test_h_ratio(order):
+    """Very different h: the ball at maxh 0.2, the box minus the ball at 0.8 with
+    curvaturesafety 0.7 (mean edges of Gamma_h 0.209 and 0.698, ratio 3.3), both
+    orders of the sides. Measured: x' at most 2.7e-2 h outside F' (h = 0.70; the
+    coarse side has 58 faces). Not in the suite (slower): ball at 0.15 or 0.12
+    against 0.6 (ratios 3.1, 3.8), x' at most 1.4e-2 h outside F' (h = 0.48)."""
+    p1, p2 = sphere_paths(0.2, 0.8, 0.7)[::order]
+    r = check(pair(p1, p2), p1, p2)
+    assert_pairing(r, sliver=10 * MERGE_TOL)
+    assert r["over"] < 0.03
+
+
+def cylinder_meshes(h1, h2, R=0.5):
+    """An open interface: the lateral surface of the cylinder r < R, 0 < z < 1, and
+    the box (-1, 1)^2 x (0, 1) minus it, meshed on their own (bc "interface")."""
+    cyl = lambda: Cylinder(Pnt(0, 0, -1), Pnt(0, 0, 2), R).bc("interface")
+    g1 = CSGeometry()
+    g1.Add(cyl() * Plane(Pnt(0, 0, 0), Vec(0, 0, -1)).bc("bottom") * Plane(Pnt(0, 0, 1), Vec(0, 0, 1)).bc("top"))
+    g2 = CSGeometry()
+    g2.Add(OrthoBrick(Pnt(-1, -1, 0), Pnt(1, 1, 1)).bc("outer") - cyl().maxh(h2))
+    return Mesh(g1.GenerateMesh(maxh=h1)), Mesh(g2.GenerateMesh(maxh=max(h2, 0.4)))
+
+
+def cylinder(X, Y, Z):
+    return sqrt(X * X + Y * Y) - 0.5
+
+
+@pytest.mark.parametrize("h1,h2", [(0.3, 0.3), (0.2, 0.3)])
+def test_open_surface(h1, h2):
+    """The rims (z = 0, 1) of the two sides' image surfaces differ; the strips of
+    depth GAP_TOL h beyond the rim edges pair them (strips cover up to 1e-3 h^2
+    per face). Measured: slivers up to 9.9e-11 h^2 dropped at the rims, per side
+    4.7e-12 relative (h1 = h2 = 0.3); x' at most 5.5e-3 h outside F'."""
+    p1, p2 = two_mesh_paths(*cylinder_meshes(h1, h2), phi=cylinder)
+    for a, b in ((p1, p2), (p2, p1)):
+        r = check(pair(a, b), a, b)
+        assert_pairing(r, sliver=10 * MERGE_TOL, side_tiling=1e-10)
+        assert r["over"] < 0.01
+
+
+def test_unpaired_piece_raises():
+    """Side 2 covers only part of Gamma (its faces with x > 0.5 removed)."""
+    p1, p2 = sphere_paths(0.5, 0.35)
+    F2 = BitArray(p2.facets)
+    for f in p2.mesh.facets:
+        if F2[f.nr] and np.mean([p2.mesh[v].point[0] for v in f.vertices]) > 0.5:
+            F2[f.nr] = False
+    q2 = type("P", (), dict(mesh=p2.mesh, elements=p2.elements, facets=F2, target=p2.target, sigma=p2.sigma))
+    with pytest.raises(Exception, match=r"unpaired piece of Gamma_h\^1 \(side 1\).*uncovered area"):
+        pair(p1, q2)
+    with pytest.raises(Exception, match=r"unpaired piece of Gamma_h\^2 \(side 2\)"):
+        pair(q2, p1)                                           # and the other way round
