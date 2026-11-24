@@ -119,6 +119,7 @@ public:
     Array<int> els;
     for (size_t s = 0; s < I->NSegments(); s++)
       {
+        if (I->Empty (side, s)) continue;
         int el = I->Facet (side, I->Segment(s).piece[side].f).el;
         if (!els.Contains(el)) els.Append (el);
       }
@@ -162,6 +163,7 @@ public:
   template <typename EMIT>
   void Assemble (size_t s, LocalHeap & lh, EMIT && emit) const
   {
+    if (I->Empty (side, s)) return;                 // 3D: no piece of this side
     HeapReset hr(lh);
     const IfcSegment & seg = I->Segment(s);
     ElementId ei(VOL, I->Facet (side, seg.piece[side].f).el);

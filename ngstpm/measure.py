@@ -6,7 +6,8 @@ D_h^i: one-sided, specialcf.normal is the outward normal of the element K, and a
 that is not extrapolated is K's. Not NGSolve's ds (BND elements).
 
 - BilinearForm: `+=` splits the SumOfIntegrals; the interface integrals are assembled on the
-  segments of the common subdivision (per-piece Gauss rules of order 2k + bonus), the rest by
+  segments of the common subdivision (per-piece Gauss rules of order 2k + bonus; in 3D one
+  per triangle of a piece), the rest by
   NGSolve unchanged. `q.Extrapolate(...)` of a space without dofs on K is evaluated on the
   partner K' (D7); with condense=True the coupling is condensed with the rest (D16).
 - LinearForm and Integrate: local integrands, on the same per-piece rules (rule order
@@ -32,8 +33,9 @@ def _ds(self, side, bonus_intorder=0):
     a trial function that is not extrapolated is K's. The facets are integrated
     as element boundaries of K (as dx(element_boundary=True)), also when they
     are interior facets of the mesh; this is not NGSolve's ds, which integrates
-    over BND elements. One Gauss rule per piece of the common subdivision, of
-    order 2k + bonus_intorder in forms (5 + bonus_intorder in Integrate)."""
+    over BND elements. One Gauss rule per piece of the common subdivision (3D:
+    per triangle of a piece), of order 2k + bonus_intorder in forms
+    (5 + bonus_intorder in Integrate)."""
     if not isinstance(side, int):
         same = lambda a, b: (a & ~b).NumSet() == 0 and (b & ~a).NumSet() == 0
         side = next((i for i in (1, 2) if _IfcSide(self, i)[0] == side.mesh
