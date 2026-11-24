@@ -188,6 +188,7 @@ void Interface::Build ()
           F.loc = S.ma->GetElFacets(ElementId(VOL, F.el)).Pos(fnr);
           S.ma->GetFacetPNums (fnr, pnums);
           for (int a = 0; a < 2; a++) F.p[a] = S.ma->GetPoint<3> (pnums[a]);
+          F.p[2] = 0.0;                                       // unused in 2D
           F.len = L2Norm (F.p[1] - F.p[0]);
           facets[i].Append (F);
           pv[i].Append ({pnums[0], pnums[1]});

@@ -21,7 +21,7 @@ struct IfcSide            // one side, as given by its TransferPath
 };
 
 struct IfcFacet { int facet, el, loc; ngbla::Vec<3> p[3]; double len; };   // facet nr, owner K in D_h^i, local nr; vertices
-// (3D: p[0..2] the face's vertices in mesh order, len its area |F|)
+// (2D: p[2] = 0; 3D: p[0..2] the face's vertices in mesh order, len its area |F|)
 
 // Piece of the facet F = Facet(side, f): the points p[0] + t (p[1] - p[0]), t in [t[0], t[1]].
 // In 3D a piece is a union of triangles tri in F's reference coordinates (xi, eta),
@@ -58,8 +58,9 @@ public:
   // beyond that (and for any other unpaired piece) the construction raises.
   // 3D (Build3D): relative to h = the larger of the two sides' mean edge lengths of Gamma_h;
   // pieces of area below merge_tol h^2 are dropped (also image triangles that small raise);
-  // gap_tol h is the depth of the strips beyond the rims of open surfaces and how far a
-  // partner x' may lie outside its face F' (the D14 absorption as in 2D).
+  // gap_tol h is the depth of the strips beyond the rims of open surfaces, how far a
+  // partner x' may lie outside its face F' (the D14 absorption as in 2D) and how far the
+  // path of x' may end from xbar.
   Interface (IfcSide s1, IfcSide s2, double amerge, double agap);
   int Dim () const { return dim; }
   double MergeTol () const { return merge_tol; }

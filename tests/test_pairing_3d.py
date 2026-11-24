@@ -6,17 +6,20 @@ sides' mean edge lengths of Gamma_h), measured on the configurations below
 (sphere: ball and box minus ball meshed on their own; cylinder: open surface):
 - pieces below MERGE_TOL h^2 = 1e-10 h^2 are dropped. Slivers that small
   appear where vertices of the two sides (nearly) coincide: on the sphere up to
-  3.0e-11 h^2 (h1 = 0.2, h2 = 0.6; elsewhere < 1e-17 h^2), at the rims of the
-  cylinder 9.9e-11 h^2, and with vertices moved by eps h from 1e-10 h^2 per
-  face. A side's pieces tile Gamma_h^i to 5e-15 relative without such slivers,
-  6.6e-13 (sphere), 4.7e-12 (cylinder) and 1.7e-10 (eps = 1e-10) with them;
+  9.9e-11 h^2 per face (h1 = 0.2, h2 = 0.6; 2.0e-11 h^2 at h1 = 0.12), and with
+  vertices moved by eps h from 1e-10 h^2 per face. A side's pieces tile
+  Gamma_h^i to 5e-15 relative without such slivers, 1.9e-12 (sphere) and
+  1.7e-10 (eps = 1e-10) with them;
 - vertex images of one side (one per face at the vertex) differ by at most
   8.2e-9 h (sphere; measured with a temporary diagnostic);
-- the partner x' of a rule point lies at most 1.5e-2 h outside its face F' on
-  the sphere at h ratios 1 to 3.8 (h = 0.47, 0.48), 2.7e-2 h with a coarse side of
-  58 faces (h = 0.70), 5.5e-3 h on the cylinder: GAP_TOL = 5e-2 h leaves a margin
-  of 1.9 in the worst case. The rim strips (depth GAP_TOL h) cover at most
-  1e-3 h^2 per face on the cylinder.
+- the partner x' of a rule point lies at most 2.3e-2 h outside its face F' on
+  the sphere (h1 = 0.5, h2 = 0.35, h = 0.47; 1.6e-2 h at h ratios up to 4,
+  h = 0.48), 2.5e-2 h with a coarse side of 58 faces (h = 0.70), 5.5e-3 h on the
+  cylinder: GAP_TOL = 5e-2 h leaves a margin of 2.2 in the worst case. GAP_TOL h
+  also bounds how far the path of x' may end from xbar, and the absorption of
+  test_absorption (x' up to GAP_TOL h outside F'). The rim strips (depth GAP_TOL
+  h) covered at most 1e-3 h^2 per face on the cylinder (measured with the
+  charts in the planes of the image triangles; not re-measured).
 """
 
 from functools import lru_cache
@@ -241,8 +244,8 @@ def test_nearly_coincident(eps):
     """The fitted mesh (h = 0.5): side 1 its ball, side 2 the rest of the box in a
     copy with the sphere vertices moved by eps h:
     slivers of width ~eps h. Measured: per face up to 1.4e-10 h^2 dropped (below
-    MERGE_TOL h^2 each; 2.4e-10 h^2 at eps = 1e-4), per side 1.7e-10 relative
-    (eps = 1e-10); x' at most 8.8e-5 h outside F' (eps = 1e-3)."""
+    MERGE_TOL h^2 each; 1.3e-10 h^2 at eps = 1e-4), per side 1.7e-10 relative
+    (eps = 1e-10); x' at most 1.0e-4 h outside F' (eps = 1e-3)."""
     m = fitted_mesh(0.5)
     p1, p2 = fitted_paths(0.5, m, moved_copy(m, eps))
     r = check(pair(p1, p2), p1, p2)
@@ -254,9 +257,9 @@ def test_nearly_coincident(eps):
 def test_h_ratio(order):
     """Very different h: the ball at maxh 0.2, the box minus the ball at 0.8 with
     curvaturesafety 0.7 (mean edges of Gamma_h 0.209 and 0.698, ratio 3.3), both
-    orders of the sides. Measured: x' at most 2.7e-2 h outside F' (h = 0.70; the
+    orders of the sides. Measured: x' at most 2.5e-2 h outside F' (h = 0.70; the
     coarse side has 58 faces). Not in the suite (slower): ball at 0.15 or 0.12
-    against 0.6 (ratios 3.1, 3.8), x' at most 1.4e-2 h outside F' (h = 0.48)."""
+    against 0.6 (ratios 3.1, 3.8), x' at most 1.6e-2 h outside F' (h = 0.48)."""
     p1, p2 = sphere_paths(0.2, 0.8, 0.7)[::order]
     r = check(pair(p1, p2), p1, p2)
     assert_pairing(r, sliver=10 * MERGE_TOL)
@@ -281,9 +284,8 @@ def cylinder(X, Y, Z):
 @pytest.mark.parametrize("h1,h2", [(0.3, 0.3), (0.2, 0.3)])
 def test_open_surface(h1, h2):
     """The rims (z = 0, 1) of the two sides' image surfaces differ; the strips of
-    depth GAP_TOL h beyond the rim edges pair them (strips cover up to 1e-3 h^2
-    per face). Measured: slivers up to 9.9e-11 h^2 dropped at the rims, per side
-    4.7e-12 relative (h1 = h2 = 0.3); x' at most 5.5e-3 h outside F'."""
+    depth GAP_TOL h beyond the rim edges pair them. Measured: no slivers dropped
+    (per side 1.4e-16 relative); x' at most 5.5e-3 h outside F'."""
     p1, p2 = two_mesh_paths(*cylinder_meshes(h1, h2), phi=cylinder)
     for a, b in ((p1, p2), (p2, p1)):
         r = check(pair(a, b), a, b)
