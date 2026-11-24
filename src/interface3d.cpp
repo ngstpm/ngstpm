@@ -304,6 +304,17 @@ void Interface::Build3D ()
       }
     return segments[it->second].piece[i];
   };
+  // candidates: the image triangles of each side binned in a uniform grid of cells of width
+  // 2 rmax + 2 gap (rmax: the largest bounding radius of both sides), so that the bounding-sphere
+  // test below can only pass for triangles in the 27 cells around the centre's cell
+  double rmax = 0;
+  for (int i = 0; i < 2; i++) for (double r : rad[i]) rmax = max2 (rmax, r);
+  double cell = 2 * rmax + 2 * gap;
+  auto cellof = [&] (const Vec<3> & c)
+  { return std::array<int,3> { int (floor (c(0) / cell)), int (floor (c(1) / cell)), int (floor (c(2) / cell)) }; };
+  std::map<std::array<int,3>,Array<int>> grid[2];
+  for (int i = 0; i < 2; i++)
+    for (int f = 0; f < ctr[i].Size(); f++) grid[i][cellof (ctr[i][f])].Append (f);
   for (int i = 0; i < 2; i++)
     {
       int j = 1 - i;
@@ -369,9 +380,17 @@ void Interface::Build3D ()
             pc.area += a;
             covered += a;
           };
-          for (int g = 0; g < facets[j].Size(); g++)
+          // the faces of side j in the cells around T_F's, in increasing order (as a plain search)
+          Array<int> cand;
+          auto c0 = cellof (ctr[i][f]);
+          for (int a = -1; a <= 1; a++) for (int b = -1; b <= 1; b++) for (int d = -1; d <= 1; d++)
             {
-              // a plain O(N1 N2) search; the bounding spheres reject almost all pairs cheaply
+              auto it = grid[j].find ({ c0[0] + a, c0[1] + b, c0[2] + d });
+              if (it != grid[j].end()) for (int g : it->second) cand.Append (g);
+            }
+          std::sort (cand.begin(), cand.end());
+          for (int g : cand)
+            {
               if (L2Norm (ctr[i][f] - ctr[j][g]) > rad[i][f] + rad[j][g] + 2 * gap) continue;
               const Tri & XG = images[j][g];
               // the two sides lie on either side of Gamma: paired faces have (oriented) image
