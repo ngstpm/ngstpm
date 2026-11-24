@@ -88,10 +88,12 @@ class FSITransient:
 
     mat: dict mu_F, rho_F, lam_S, mu_S, rho_S, b0; fF, fS: loads (vector CFs in x, y, t);
     g(X, Y): kinematic data at xbar; gS(X, Y): the stress jump sigma_S - sigma_F at xbar
-    (g_nu = gS(xbar) n_S), None = 0; bcF, bcS = (table, g_D, g_N) of component_bc."""
+    (g_nu = gS(xbar) n_S), None = 0; bcF, bcS = (table, g_D, g_N) of component_bc.
+    facets = (Gamma_h^F, Gamma_h^S): boundary Regions or facet BitArrays, for D_F, D_S not
+    sharing a face (a gap); default the faces between D_F and D_S (transfer_paths)."""
 
     def __init__(self, mesh, order, phi, DF, DS, mat, fF, fS, g, gS, bcF, bcS, dt, tau=(1.0, 1.0),
-                 full=True, solver="umfpack"):
+                 full=True, solver="umfpack", facets=(None, None)):
         self.mesh, self.order, self.DF, self.DS, self.mat, self.dt = mesh, order, DF, DS, mat, dt
         self.solver, self.bc = solver, (bcF, bcS)
         muF, rhoF, lamS, muS, rhoS, b0 = (mat[k] for k in ("mu_F", "rho_F", "lam_S", "mu_S", "rho_S", "b0"))
@@ -100,7 +102,7 @@ class FSITransient:
         self.c_a = dt ** 2 * ((0.5 - BETA) - BETA * (1 - GAMMA) / GAMMA)
         self.theta = Parameter(1.0)
 
-        pF, pS = (transfer_paths(mesh, phi, D, order=order + 4) for D in (DF, DS))
+        pF, pS = (transfer_paths(mesh, phi, D, order=order + 4, facets=F) for D, F in zip((DF, DS), facets))
         self.paths = (pF, pS)
         I = pair(pF, pS)                                              # side 1: fluid, side 2: solid
         dF, dS = (I.ds(side=i, bonus_intorder=max(6, 2 * order)) for i in (1, 2))
