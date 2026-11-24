@@ -20,8 +20,21 @@ Data.convective_velocity, the caller's previous beta), that of step 1 beta = 0. 
 navier_stokes_stress.picard (relative L2 increment of u_h < 1e-8, at most 50 solves per step);
 a step that does not converge ends the run as failed.
 
-Schemes: "euler" (theta = 1) and "cn" (theta = 1/2 after one Euler step, as
-fsi_transient.py and MATLAB's hemodynamics.m), so a^0 is never read.
+Schemes: "euler" (theta = 1); "cn" (theta = 1/2 after one Euler step of size EPS dt: the
+steps end at EPS dt, dt, 2 dt, ..., T, the first CN step of size (1 - EPS) dt; the theta
+update of a holds for any step size); "cn-euler" (CN after one Euler step of size dt, as
+fsi_transient.py and MATLAB's hemodynamics.m: a control). a^0 is never read.
+Why EPS: the Euler step gives a^1 = (u^1 - u^0)/tau satisfying the discrete momentum row of
+its own step exactly, so CN starts from a consistent (u, a) (CN from an a^0 that does not
+satisfy it carries the defect undamped in sigma and p), with an O(tau) error in the pressure
+of that step: tau = dt (cn-euler) makes sigma and p first order in dt, tau = EPS dt shrinks
+that to O(EPS dt) at the cost of round-off of order eps_machine/(EPS dt) in a^1. Pure time
+error (u = (x + 2 y, 3 x - y) cos t, p = 0, k = 1, exact in space; T = 0.4, dt = 0.1 -> 0.0125):
+|s - s_h| cn-euler 4.0e-2 -> 4.9e-3 (rate 1), EPS = 1e-3: 2.2e-4 -> 9.0e-7 (rates 2.3-2.8),
+EPS = 1e-5: round-off takes over at dt = 0.0125 (3.3e-4). EPS = 1e-3 is the default. This
+replaces the acceleration problem of MATLAB's initial_state (decision of Jaime, 2026-11-24:
+its a^0 is another discretization, not consistent with the step, and on TPM converges at rate
+k only).
 
 Cases (manufactured): those of navier_stokes_stress.py with u = U cos t, p = P cos t (U, P
 the steady fields of each case), f = rho u_t + rho (u . grad) u - div sigma. Fitted:
@@ -32,19 +45,22 @@ traction on Gamma ("traction", "traction kidney"), u . n_Gamma > 0 kept for t < 
 scale with cos t), beta = u** uncorrected. Stabilisation: navier_stokes_stress.default_stab
 (pointwise S for the traction cases, global otherwise).
 
-Initial velocity (start): "elliptic" (default), u^0 = u_h of the Stokes solve of the case at
-t = 0 with the data of (u, p)(0) (beta = 0, f = -div sigma(0), the boundary data at t = 0);
-"l2", MATLAB's L2 projection of u(0) on the elements (initial_state.m:50-51). The L2
-projection does not satisfy the discrete constraints (div, and on Gamma_h the transferred
-trace), so the first step puts O(h^{k+1}/dt) into a^1; Euler damps it, CN carries it undamped
-in sigma and p. Fitted it is small (dirichlet, k = 1, dt = h^2: rates about 2); unfitted it is
-not (Example 2, k = 1, dt = h^2, T = 0.32, h = 0.2 -> 0.1: |s - s_h| 0.30 -> 0.19, Euler
-0.33 -> 0.070; the exact a^0 instead of the Euler start: 0.28 -> 0.38; h = 0.2, dt = 0.0025,
-T = 0.08: 2.07). The Stokes projection is discretely consistent: 0.33 -> 0.070 (rate 2.24) and
-0.369 (Euler 0.347).
+Initial velocity (start): "elliptic" (default), u^0 = u_h of the steady Navier-Stokes solve
+of the case at t = 0 (the Picard loop with f = f(0) - rho u_t(0) = -div sigma(0) + rho (u . grad) u(0),
+the boundary data at t = 0), and the first beta of step 1 its u** (corrected on the Dirichlet
+TPM cases); "l2", MATLAB's L2 projection of u(0) on the elements (initial_state.m:50-51), the
+first beta zero. The first step of size tau divides by tau any defect of u^0 against the
+discrete constraints of the step (div, the transferred trace on Gamma_h, and S, beta in the
+local solver), and CN carries it in sigma and p. The L2 projection has such a defect
+(Example 2, k = 1, h = 0.2, dt = 0.0025, T = 0.08: |s - s_h| 2.07 with cn-euler, 2.2e+3 with
+cn; dt = h^2, T = 0.32, h = 0.2 -> 0.1, cn-euler: 0.30 -> 0.19, Euler 0.33 -> 0.070); so has
+the Stokes projection (beta = 0, S = mu) against the Oseen step (cn-euler 0.369, cn 103). The
+steady Navier-Stokes solve shares the operator of the first step up to O(tau): cn 0.347,
+cn-euler 0.347, Euler 0.347; dt = h^2, h = 0.2 -> 0.1: 0.33 -> 0.071 (rate 2.23, as the steady
+loop); traction: rates 1.68, 1.54, 2.02 for sigma, p, u (steady: the same).
 
-Differences from MATLAB: the default start (above; MATLAB also projects uhat^0, read by nothing
-in a step); the first beta of step 1 is zero (MATLAB: what the caller sets); the stopping norm
+Differences from MATLAB: the default start and the EPS step of "cn" (above; MATLAB also projects
+uhat^0, read by nothing in a step, and solves the acceleration problem for a^0); the stopping norm
 as in navier_stokes_stress.py.
 
 Solver: SciPy SuperLU (superlu.py), as navier_stokes_stress.py.
@@ -65,7 +81,8 @@ from ngstpm import restrict, unfitted_domain
 from poisson_tpm import background_mesh
 
 t = Parameter(0.0)                                    # the time of the data
-SCHEMES = ("euler", "cn")
+SCHEMES = ("euler", "cn", "cn-euler")
+EPS = 1e-3                                            # the first step of "cn", in units of dt
 CASES = ns.CASES
 COLUMNS = ns.COLUMNS                                  # by ns.kind(case)
 
@@ -87,8 +104,11 @@ def exact(case, mu, rho, U=None, P=None):
     ut = CF((-U[0] * sin(t), -U[1] * sin(t)))
     p = P * cos(t)
     sigma, gamma, f = st.manufactured(u, p, mu)
-    gu = CF((u[0].Diff(x), u[0].Diff(y), u[1].Diff(x), u[1].Diff(y)), dims=(2, 2))
-    return u, p, sigma, gamma, f + rho * (ut + gu * u)
+    return u, p, sigma, gamma, f + rho * (ut + gradient(u) * u)
+
+
+def gradient(u):
+    return CF((u[0].Diff(x), u[0].Diff(y), u[1].Diff(x), u[1].Diff(y)), dims=(2, 2))
 
 
 def scaled(beta, rho):
@@ -144,7 +164,7 @@ def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", mesh=None, log=No
     failed is True if a step did not converge (the run stops there). mesh: fitted cases only,
     default the unit square of size h; U, P: as in exact; stab: default
     navier_stokes_stress.default_stab(case); start: the initial velocity, "elliptic" (the
-    Stokes projection of u(0)) or "l2" (MATLAB's L2 projection)."""
+    steady Navier-Stokes solve at t = 0) or "l2" (MATLAB's L2 projection)."""
     nsteps = round(T / dt)
     assert abs(nsteps * dt - T) < 1e-12 * max(T, 1), "T must be a multiple of dt"
     stab = ns.default_stab(case) if stab is None else stab
@@ -158,13 +178,22 @@ def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", mesh=None, log=No
     un, an = GridFunction(V), GridFunction(V)        # a^0 = 0: not read (Euler first step)
     t.Set(0.0)
     un.Set(u, definedonelements=D)
-    if start == "elliptic":        # the Stokes solve with the data of (u, p)(0): beta = 0, f = -div sigma(0)
-        un.vec.data = solver(CF((0, 0)), None, st.manufactured(u, p, mu)[2])[0][1].vec
     beta, iters, failed = CF((0, 0)), [], False
-    for n in range(nsteps):
+    if start == "elliptic":   # steady Navier-Stokes at t = 0 with f = f(0) - rho u_t(0): the operator of step 1
+        f0 = st.manufactured(u, p, mu)[2] + rho * (gradient(u) * u)
+        out = picard(lambda b: solver(scaled(b, rho), None, f0), mesh, order, mu, D, correct,
+                     factor=factor)
+        assert out[-1] < TOL, "the steady solve of the initial velocity did not converge"
+        un.vec.data = out[0][1].vec
+        beta = corrected_beta(mesh, out[4], out[2], D) if correct else out[4]
+    times = [(n + 1) * dt for n in range(nsteps)]
+    if scheme == "cn":
+        times = [EPS * dt] + times
+    for n, tn in enumerate(times):
         theta = 1.0 if scheme == "euler" or n == 0 else 0.5
-        t.Set((n + 1) * dt)
-        c = rho / (theta * dt)
+        tau = tn - (times[n - 1] if n else 0.0)
+        t.Set(tn)
+        c = rho / (theta * tau)
         w = c * un + (rho * (1 - theta) / theta) * an
 
         def step(b):
@@ -181,7 +210,7 @@ def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", mesh=None, log=No
         assert len(u1) == len(un.vec)
         a_old = an.vec.CreateVector()        # not aliased: NGSolve evaluates a sum term by term
         a_old.data = an.vec
-        an.vec.data = (1 / (theta * dt)) * (u1 - un.vec) - ((1 - theta) / theta) * a_old
+        an.vec.data = (1 / (theta * tau)) * (u1 - un.vec) - ((1 - theta) / theta) * a_old
         un.vec.data = u1
         beta = corrected_beta(mesh, us, m_h, D) if correct else us
     return mesh, D, (u, p, sigma, gamma), sol, p_h, m_h, S, us, iters, failed
@@ -219,7 +248,7 @@ def study(case, order, hs, dts, T, mu=1.0, rho=1.0, scheme="cn", stab=None, reco
     stab = ns.default_stab(case) if stab is None else stab
     var = "dt" if len(set(hs)) == 1 else "h"
     title = (f"{case}, k = {order}, mu = {mu}, rho = {rho}, {scheme}"
-             f"{' (Euler start)' if scheme == 'cn' else ''}, u^0 {start}, T = {T}, {ns.STAB[stab]}, "
+             f"{f' (Euler start {EPS:g} dt)' if scheme == 'cn' else ''}, u^0 {start}, T = {T}, {ns.STAB[stab]}, "
              f"Picard tol {TOL:g}, cap {MAXIT}, rates in {var}")
     print(title, flush=True)
     print(f"  {'h':>7}  {'dt':>9}" + "".join(f"  {c:>9}  eoc " for c in COLUMNS[ns.kind(case)])
@@ -251,11 +280,11 @@ if __name__ == "__main__":
     p.add_argument("--dt", type=float, nargs="+", required=True,
                    help="time steps, one per --h (or one for all)")
     p.add_argument("--T", type=float, default=1.0, help="final time (default 1)")
-    p.add_argument("--scheme", choices=SCHEMES, default="cn", help="default cn (Euler start)")
+    p.add_argument("--scheme", choices=SCHEMES, default="cn", help="default cn (Euler start of EPS dt)")
     p.add_argument("--mu", type=float, default=1.0, help="viscosity (default 1)")
     p.add_argument("--rho", type=float, default=1.0, help="density (default 1)")
     p.add_argument("--start", choices=("elliptic", "l2"), default="elliptic",
-                   help="initial velocity: Stokes projection (default) or L2 projection (MATLAB)")
+                   help="initial velocity: steady Navier-Stokes solve at t = 0 (default) or L2 projection (MATLAB)")
     p.add_argument("--stab", choices=("global", "pointwise"), default=None,
                    help="default: navier_stokes_stress.default_stab(case)")
     a = parse(p)

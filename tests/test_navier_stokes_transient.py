@@ -39,13 +39,22 @@ def test_euler_first_order_in_time():
 
 
 def test_cn_euler_start_rates():
-    """CN after one Euler step: u second order; sigma and p first order, the O(dt) pressure
-    error of the Euler step carried undamped by the trapezoid (as fsi_transient.py). Also
-    guards the acceleration update (an aliased NGSolve vector expression zeroed a^n, which
-    made u first order too)."""
-    for rs, ru, rp in rates(time_errors("cn", (0.1, 0.05, 0.025))):
+    """CN after one Euler step of size dt (control): u second order; sigma and p first order,
+    the O(dt) pressure error of the Euler step carried undamped by the trapezoid (as
+    fsi_transient.py). Also guards the acceleration update (an aliased NGSolve vector
+    expression zeroed a^n, which made u first order too)."""
+    for rs, ru, rp in rates(time_errors("cn-euler", (0.1, 0.05, 0.025))):
         assert ru > 1.8, ru
         assert 0.9 < rs < 1.15 and 0.9 < rp < 1.15, (rs, rp)
+
+
+def test_cn_rates():
+    """CN after one Euler step of size EPS dt (default): second order in sigma, u and p, and
+    sigma 100 times below the Euler-start control at dt = 0.1."""
+    E = time_errors("cn", (0.1, 0.05, 0.025))
+    for r in rates(E):
+        assert all(ri > 1.9 for ri in r), r
+    assert E[0][0] < 0.01 * time_errors("cn-euler", (0.1,))[0][0]
 
 
 @pytest.mark.parametrize("case", ["dirichlet", "mixed"])
@@ -79,9 +88,10 @@ def test_unfitted_euler(case, rate):
 
 
 def test_unfitted_cn_elliptic_start():
-    """TPM, CN, small dt on a coarse mesh (h = 0.2, dt = 0.0025, 32 steps): with the L2
-    projection u^0 the first step kicks a^1 by O(h^2/dt) and CN carries it in sigma
-    (|s - s_h| 2.07); the Stokes projection u^0 is discretely consistent (0.369, Euler 0.347)."""
+    """TPM, CN, small dt on a coarse mesh (h = 0.2, dt = 0.0025, 32 steps): the first step of
+    size EPS dt divides the defect of u^0 against the discrete step by EPS dt; the L2
+    projection has one (|s - s_h| 2.2e+3), the steady Navier-Stokes solve at t = 0 does not
+    (0.347, Euler 0.347)."""
     case, args = "Example 2 (unfitted disk)", (1, 0.2, 0.0025, 0.08)
     es = {(s, st): nt.row(case, *args, scheme=s, start=st)[2][0]
           for s, st in (("cn", "elliptic"), ("cn", "l2"), ("euler", "elliptic"))}
