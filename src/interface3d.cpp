@@ -10,28 +10,31 @@ using ngstpm::Locate;
 // Interface (3D; tetrahedra, triangular straight faces): pieces by clipping
 // in local charts (no global parametrisation of Gamma).
 //  1. as in 2D, every vertex v of Gamma_h^i has one image per face of the side
-//     at v (element-wise paths), averaged; the flat triangles T_F on the images
-//     of the vertices of the faces F form a conforming surface S_i near Gamma;
-//  2. the chart of F is the plane through X0 (the image of F's first vertex)
-//     normal to n0, the mean unit path direction at F's vertices (axes e1 along
+//     at v (element-wise paths), averaged; each face F is split into m_F^2
+//     subtriangles t (m_F = 1 unless the path map is not affine on F up to a
+//     fraction of the gap: carved sides), and the flat triangles T_t on the
+//     images of their nodes form a conforming surface S_i near Gamma (for
+//     m_F = 1: T_F, on the images of F's vertices); see Build3D;
+//  2. the chart of t is the plane through X0 (the image of t's first vertex)
+//     normal to n0, the mean unit path direction at t's vertices (axes e1 along
 //     X1 - X0 projected onto it, e2 = n0 x e1): projected to it along (nearly)
-//     the paths, S_j stays a conforming triangulation also where T_F is a sliver
-//     far off the tangent plane of Gamma (carved meshes); T_F, projected to the
-//     chart, only gives the affine map to F's reference coordinates;
-//  3. near F, S_j projected to this chart is a planar conforming triangulation,
-//     so the chart triangle of T_F clipped against the projected T_F' (F' of the
-//     other side; the two sides lie on either side of Gamma, so only the T_F'
-//     whose normal, oriented by the outward normal of F', points to the other
-//     side of the chart than T_F's) gives polygons that tile the chart triangle
-//     of T_F up to round-off; mapped affinely
-//     to F (T_F -> F vertex by vertex) they are the pieces of side i of the
-//     segments (F, F'). Side j's pieces are computed the same way in side j's
+//     the paths, S_j stays a conforming triangulation also where T_t is a sliver
+//     far off the tangent plane of Gamma (carved meshes); T_t, projected to the
+//     chart, only gives the affine map to t's (and F's) reference coordinates;
+//  3. near t, S_j projected to this chart is a planar conforming triangulation
+//     (else the paths fold: raises), so the chart triangle of T_t clipped against
+//     the projected T_t' (t' in a face F' of the other side; the two sides lie on
+//     either side of Gamma, so only the T_t' whose normal, oriented by the
+//     outward normal of F', points to the other side of the chart than T_t's)
+//     gives polygons that tile the chart triangle of T_t up to round-off; mapped
+//     affinely to F (T_t -> t vertex by vertex) they are the pieces of side i of
+//     the segments (F, F'). Side j's pieces are computed the same way in side j's
 //     charts: the same polygons pulled back to F' would not tile F' (different
 //     faces, different charts). A segment is a pair (F, F') found by either side;
 //     its piece on one side may be empty (a sliver dropped there);
-//  4. open surfaces: beyond each rim edge of S_j (an edge in one face of S_j), a
-//     strip of depth gap belongs to that edge's face, so that the O(h^2) by
-//     which T_F sticks out of S_j near the rim is paired;
+//  4. open surfaces: beyond each rim edge of S_j (on an edge in one face of
+//     Gamma_h^j), a strip of depth gap belongs to that edge's face, so that the
+//     O(h^2) by which T_t sticks out of S_j near the rim is paired;
 //  5. coverage per face: the pieces' areas sum to |F| (else: unpaired piece, or
 //     the paths of side j overlap); then the rules (partner x' on F' by
 //     Gauss-Newton on the path line through xbar; its own path must end within
@@ -527,6 +530,39 @@ void Interface::Build3D ()
                              "to its paths (cosine " + ToString (InnerProduct (n0, nimg[i][t])) + "): no chart");
           nrm[i].Append (n0);
         }
+      // a fold of S_i: seen along the paths (in the chart of one of them), two image subtriangles
+      // at a common edge lie on the same side of it (S_j must project to a planar triangulation)
+      std::map<std::pair<int,int>,Array<int>> sedge;
+      for (int t = 0; t < subs[i].Size(); t++)
+        for (int a = 0; a < 3; a++)
+          {
+            int v = subs[i][t].v[a], w = subs[i][t].v[(a + 1) % 3];
+            sedge[{min2 (v, w), max2 (v, w)}].Append (t);
+          }
+      for (auto & [e, ts] : sedge)
+        {
+          if (ts.Size() != 2) continue;
+          Chart P(subs[i][ts[0]].X, nrm[i][ts[0]]);
+          Vec<2> a = P(image[i][e.first]), b = P(image[i][e.second]);
+          double side[2];
+          for (int k = 0; k < 2; k++)
+            {
+              const Sub & s = subs[i][ts[k]];
+              int q = 0;
+              while (s.v[q] == e.first || s.v[q] == e.second) q++;
+              side[k] = Cross2 (Vec<2> (b - a), Vec<2> (P(s.X[q]) - a));
+            }
+          if (side[0] * side[1] >= 0)
+            {
+              const IfcFacet & F = facets[i][subs[i][ts[0]].f], & F2 = facets[i][subs[i][ts[1]].f];
+              throw Exception ("pair: the paths of Gamma_h^" + ToString(i+1) + " fold at the face " + Pt3 (F.p[0])
+                               + " - " + Pt3 (F.p[1]) + " - " + Pt3 (F.p[2]) + ": seen along the paths, the image "
+                               "of a subtriangle and that of its neighbour (on the face " + Pt3 (F2.p[0]) + " - "
+                               + Pt3 (F2.p[1]) + " - " + Pt3 (F2.p[2]) + ") lie on the same side of their common "
+                               "edge, between the path ends " + Pt3 (image[i][e.first]) + " and "
+                               + Pt3 (image[i][e.second]) + " (see pair: the conditions in 3D)");
+            }
+        }
     }
 
   // pieces: for each subtriangle t of a face F of side i, clip in the chart of t against the
@@ -685,7 +721,8 @@ void Interface::Build3D ()
                              + ", uncovered area " + ToString (F.len - covered) + " of " + ToString (F.len)
                              + (ncand == 0 && nnear > 0
                                 ? ": the faces of side " + ToString(j+1) + " near its path ends are all oriented as "
-                                  "it, not on the other side of Gamma (see pair: the conditions in 3D)"
+                                  "it: the two sides must lie on opposite sides of Gamma (see pair: the conditions "
+                                  "in 3D, (2))"
                                 : ": no path of side " + ToString(j+1) + " ends on its part of Gamma, or the paths "
                                   "of a side fold there (see pair: the conditions in 3D)"));
           if (covered > F.len + tol)
@@ -798,7 +835,7 @@ void Interface::Rule3D (int side, size_t s, int intorder, Array<IfcPoint> & pts,
                                  + ToString (side + 1) + ") at " + Pt3 (pt.x) + ": its path ends at " + Pt3 (pt.xbar)
                                  + ", which the paths of the face " + Pt3 (G.p[0]) + " - " + Pt3 (G.p[1]) + " - "
                                  + Pt3 (G.p[2]) + " of the other side miss by " + ToString (rmin)
-                                 + " > the gap tolerance " + ToString (gap));
+                                 + " > the gap tolerance " + ToString (gap) + " (see pair: the conditions in 3D)");
             }
           pt.xp = PointAt3 (G, u);
           // the path line of x' may cross Gamma twice (sheets closer than h): x''s own path
