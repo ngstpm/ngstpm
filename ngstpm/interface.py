@@ -29,7 +29,9 @@ def pair(p1, p2):
     And in 3D (tetrahedra, straight triangular faces): a segment is a pair of
     faces (F, F'); each side's pieces are polygons on its faces, clipped in the
     chart of the face (the plane of the triangle on its vertices' path ends)
-    against the other side's image triangles, and they tile Gamma_h^i face by
+    against the other side's image triangles (the sides lie on either side of
+    Gamma: only those whose outward normals are opposed to the face's; and the
+    path of a partner x' must end within GAP_TOL * h of xbar), and they tile Gamma_h^i face by
     face (else raises: unpaired piece, or overlapping paths). h is the larger
     of the two sides' mean edge lengths of Gamma_h (2D: of Gamma_h^1 only);
     pieces below MERGE_TOL * h^2 are dropped; GAP_TOL * h bounds how far x'

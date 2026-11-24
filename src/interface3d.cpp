@@ -17,7 +17,9 @@ using ngstpm::Locate;
 //     path ends of F's vertices, O(h) from the tangent plane of Gamma;
 //  3. near F, S_j projected to this chart is a planar conforming triangulation,
 //     so the chart triangle of T_F clipped against the projected T_F' (F' of the
-//     other side) gives polygons that tile T_F up to round-off; mapped affinely
+//     other side; the two sides lie on either side of Gamma, so only the T_F'
+//     whose normal, oriented by the outward normal of F', is opposed to T_F's)
+//     gives polygons that tile T_F up to round-off; mapped affinely
 //     to F (T_F -> F vertex by vertex) they are the pieces of side i of the
 //     segments (F, F'). Side j's pieces are computed the same way in side j's
 //     charts: the same polygons pulled back to F' would not tile F' (different
@@ -28,7 +30,8 @@ using ngstpm::Locate;
 //     which T_F sticks out of S_j near the rim is paired;
 //  5. coverage per face: the pieces' areas sum to |F| (else: unpaired piece, or
 //     the paths of side j overlap); then the rules (partner x' on F' by
-//     Gauss-Newton on the path line through xbar) are checked at order 12.
+//     Gauss-Newton on the path line through xbar; its own path must end within
+//     the gap of xbar) are checked at order 12.
 // ---------------------------------------------------------------------------
 
 namespace
@@ -264,14 +267,19 @@ void Interface::Build3D ()
       for (int r = 0; r < rims[i].Size(); r++) frims[i][rims[i][r].f].Append (r);
     }
 
-  // bounding spheres of the image triangles
-  Array<Vec<3>> ctr[2]; Array<double> rad[2];
+  // bounding spheres of the image triangles; their unit normals, oriented as the outward
+  // normal of the owner element on F (the vertex order of F carried over to T_F)
+  Array<Vec<3>> ctr[2], nimg[2]; Array<double> rad[2];
   for (int i = 0; i < 2; i++)
-    for (auto & X : images[i])
+    for (int f = 0; f < images[i].Size(); f++)
       {
+        const Tri & X = images[i][f];
+        const IfcFacet & F = facets[i][f];
         Vec<3> c = (1.0 / 3) * (X[0] + X[1] + X[2]);
         ctr[i].Append (c);
         rad[i].Append (max2 (L2Norm (X[0] - c), max2 (L2Norm (X[1] - c), L2Norm (X[2] - c))));
+        Vec<3> nF = Cross (Vec<3> (F.p[1] - F.p[0]), Vec<3> (F.p[2] - F.p[0]));
+        nimg[i].Append (InnerProduct (nF, OutwardNormal3 (sides[i], F)) > 0 ? UnitNormal (X) : Vec<3> (-1.0 * UnitNormal (X)));
       }
 
   // pieces: for each face F of side i, clip in the chart of F against the faces of side j
@@ -299,7 +307,6 @@ void Interface::Build3D ()
           const IfcFacet & F = facets[i][f];
           const Tri & XF = images[i][f];
           Chart P(XF);
-          Vec<3> n0 = UnitNormal (XF);
           Vec<2> c[3];
           for (int a = 0; a < 3; a++) c[a] = P(XF[a]);
           // chart -> F's reference coordinates: c0 + xi (c1 - c0) + eta (c2 - c0)
@@ -347,7 +354,9 @@ void Interface::Build3D ()
               // a plain O(N1 N2) search; the bounding spheres reject almost all pairs cheaply
               if (L2Norm (ctr[i][f] - ctr[j][g]) > rad[i][f] + rad[j][g] + 2 * gap) continue;
               const Tri & XG = images[j][g];
-              if (fabs (InnerProduct (UnitNormal (XG), n0)) < 0.2) continue;
+              // the two sides lie on either side of Gamma: paired faces have opposed (oriented)
+              // image normals; this tells apart sheets of Gamma closer than h
+              if (InnerProduct (nimg[j][g], nimg[i][f]) > -0.2) continue;
               ncand++;
               Vec<2> Q[3];
               for (int a = 0; a < 3; a++) Q[a] = P(XG[a]);
@@ -498,6 +507,15 @@ void Interface::Rule3D (int side, size_t s, int intorder, Array<IfcPoint> & pts,
                                  + " > the gap tolerance " + ToString (gap));
             }
           pt.xp = PointAt3 (G, u);
+          // the path line of x' may cross Gamma twice (sheets closer than h): x''s own path
+          // must end at xbar, up to the gap
+          Vec<3> xbarp = EvalAt3 (P, G, pt.xp, *P.target, lh);
+          if (L2Norm (xbarp - pt.xbar) > gap)
+            throw Exception ("pair: unpaired piece of Gamma_h^" + ToString (side + 1) + " (side "
+                             + ToString (side + 1) + ") at " + Pt3 (pt.x) + ": its path ends at " + Pt3 (pt.xbar)
+                             + ", the path of its partner on the face " + Pt3 (G.p[0]) + " - " + Pt3 (G.p[1]) + " - "
+                             + Pt3 (G.p[2]) + " of the other side at " + Pt3 (xbarp) + ", "
+                             + ToString (L2Norm (xbarp - pt.xbar)) + " away > the gap tolerance " + ToString (gap));
           pt.sigmap = UnitSigma3 (P, G, pt.xp, lh);
           pt.ip = Locate (S.ma->GetTrafo (ElementId(VOL, F.el), lh), pt.x, 3);
           pt.ip.SetFacetNr (F.loc, BND);

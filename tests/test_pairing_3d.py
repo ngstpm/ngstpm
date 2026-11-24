@@ -58,15 +58,22 @@ def sphere_paths(h1, h2, curvaturesafety=2):
     return tuple(two_mesh_paths(*sphere_meshes(h1, h2, curvaturesafety)))
 
 
-def fitted_paths(h):
-    """One mesh fitted to the sphere: D_h^1 the ball, D_h^2 the rest of the box."""
+def fitted_mesh(h):
+    """One mesh fitted to the sphere: the ball (material "ball") and the rest of the box."""
     geo = CSGeometry()
     s = Sphere(Pnt(0, 0, 0), 1)
     geo.Add(s.mat("ball"))
     geo.Add((OrthoBrick(Pnt(-1.5, -1.5, -1.5), Pnt(1.5, 1.5, 1.5)) - s).mat("out"))
-    mesh = Mesh(geo.GenerateMesh(maxh=h))
-    D1 = BitArray([el.mat == "ball" for el in mesh.Elements(VOL)])
-    return transfer_paths(mesh, ball, D1), transfer_paths(mesh, ball, ~D1)
+    return Mesh(geo.GenerateMesh(maxh=h))
+
+
+def fitted_paths(h, m1=None, m2=None):
+    """D_h^1 the ball of m1, D_h^2 the rest of the box in m2 (default: both
+    fitted_mesh(h), one mesh)."""
+    m1 = fitted_mesh(h) if m1 is None else m1
+    m2 = m1 if m2 is None else m2
+    D1, D2 = (BitArray([el.mat == "ball" for el in m.Elements(VOL)]) for m in (m1, m2))
+    return transfer_paths(m1, ball, D1), transfer_paths(m2, ball, ~D2)
 
 
 def face_data(mesh, F):
@@ -154,7 +161,7 @@ def test_two_meshes(h1, h2, order):
 def test_fitted_one_mesh():
     """One mesh fitted to the sphere, D_h^1 and D_h^2 on either side: Gamma_h^1 =
     Gamma_h^2, each face paired with itself, x' = x up to the difference of the two
-    sides' path fields on a face (2.2e-10 = 4.7e-10 h; 1.3e-14 for equal paths, below)."""
+    sides' path fields on a face (2.2e-10 = 4.7e-10 h)."""
     p1, p2 = fitted_paths(0.5)
     I = pair(p1, p2)
     assert_pairing(check(I, p1, p2))
@@ -166,10 +173,11 @@ def test_fitted_one_mesh():
 
 
 def test_equal_copies():
-    """Two copies of one mesh (two meshes for pair): each face paired with its copy, x' = x."""
-    m = sphere_paths(0.5, 0.5)[0].mesh
-    m2 = Mesh(m.ngmesh.Copy())
-    p1, p2 = two_mesh_paths(m, m2)
+    """Two copies of one fitted mesh (two meshes for pair; the ball of one, the rest
+    of the box in the other): each face paired with its copy, x' = x up to the
+    difference of the two sides' path fields (2.2e-10, as on one mesh)."""
+    m = fitted_mesh(0.5)
+    p1, p2 = fitted_paths(0.5, m, Mesh(m.ngmesh.Copy()))
     I = pair(p1, p2)
     assert_pairing(check(I, p1, p2))
     S = I.segments()
@@ -177,7 +185,7 @@ def test_equal_copies():
     assert np.all(S.area > 0)
     for side in (1, 2):
         R = I._rule(side, 8)
-        assert np.abs(R["xp"] - R["x"]).max() < 1e-10
+        assert np.abs(R["xp"] - R["x"]).max() < 1e-9
 
 
 POLYS = [CF(1), x, y * z, x * x * y, x * y * z * z + y ** 3, x ** 5 + x * y * y * z * z]
@@ -212,7 +220,7 @@ def test_non_triangular_faces_raise():
 
 
 def moved_copy(mesh, eps, seed=1):
-    """A copy of the ball mesh with its sphere vertices moved tangentially (random
+    """A copy of the fitted mesh with its sphere vertices moved tangentially (random
     directions) by eps h, h = 0.47 the mean edge of its surface."""
     c = mesh.ngmesh.Copy()
     rng = np.random.default_rng(seed)
@@ -230,12 +238,13 @@ def moved_copy(mesh, eps, seed=1):
 
 @pytest.mark.parametrize("eps", [1e-14, 1e-10, 1e-6, 1e-3])
 def test_nearly_coincident(eps):
-    """Side 2 = side 1 (the ball, h = 0.5) with the sphere vertices moved by eps h:
+    """The fitted mesh (h = 0.5): side 1 its ball, side 2 the rest of the box in a
+    copy with the sphere vertices moved by eps h:
     slivers of width ~eps h. Measured: per face up to 1.4e-10 h^2 dropped (below
     MERGE_TOL h^2 each; 2.4e-10 h^2 at eps = 1e-4), per side 1.7e-10 relative
     (eps = 1e-10); x' at most 8.8e-5 h outside F' (eps = 1e-3)."""
-    p1 = sphere_paths(0.5, 0.5)[0]
-    p2 = two_mesh_paths(p1.mesh, moved_copy(p1.mesh, eps))[1]
+    m = fitted_mesh(0.5)
+    p1, p2 = fitted_paths(0.5, m, moved_copy(m, eps))
     r = check(pair(p1, p2), p1, p2)
     assert_pairing(r, sliver=20 * MERGE_TOL, side_tiling=1e-9)
     assert r["over"] < 1e-3
@@ -294,3 +303,57 @@ def test_unpaired_piece_raises():
         pair(p1, q2)
     with pytest.raises(Exception, match=r"unpaired piece of Gamma_h\^2 \(side 2\)"):
         pair(q2, p1)                                           # and the other way round
+
+
+def slab_mesh(t, h):
+    """The slab (0, 1)^2 x (0, t) (material "slab") in the box (0, 1)^2 x (-0.3, t + 0.3)."""
+    geo = CSGeometry()
+    s = OrthoBrick(Pnt(0, 0, 0), Pnt(1, 1, t))
+    geo.Add(s.mat("slab"))
+    geo.Add((OrthoBrick(Pnt(0, 0, -0.3), Pnt(1, 1, t + 0.3)) - s).mat("out"))
+    return Mesh(geo.GenerateMesh(maxh=h))
+
+
+def slab_side(mesh, mat, t, sheet=None):
+    """D_h = the elements of material mat; Gamma_h = the faces between the slab and
+    the rest (sheet "top" or "bottom": only those at z = t or z = 0); identity paths."""
+    D = BitArray([el.mat == mat for el in mesh.Elements(VOL)])
+    F = BitArray(mesh.nfacet)
+    F.Clear()
+    for f in mesh.facets:
+        els = [e.nr for e in f.elements]
+        if len(els) == 2 and D[els[0]] != D[els[1]]:
+            top = np.mean([mesh[v].point[2] for v in f.vertices]) > t / 2
+            F[f.nr] = sheet is None or top == (sheet == "top")
+    return type("P", (), dict(mesh=mesh, elements=D, facets=F, target=CF((x, y, z)), sigma=CF((0, 0, 1))))
+
+
+@pytest.mark.parametrize("t", [0.3, 0.15])
+def test_thin_slab(t):
+    """Gamma = two sheets t < h apart: the slab (h = 0.37, 0.29) against the rest of
+    the box (another mesh). Faces of the two sides on one sheet have opposed outward
+    normals, on the other sheet equal ones: each face is paired on its own sheet only
+    (before, the other sheet's faces were candidates too: a false overlap)."""
+    m1, m2 = slab_mesh(t, 0.33), slab_mesh(t, 0.25)
+    p1, p2 = slab_side(m1, "slab", t), slab_side(m2, "out", t)
+    for a, b in ((p1, p2), (p2, p1)):
+        I = pair(a, b)
+        assert_pairing(check(I, a, b))
+        for side in (1, 2):
+            R = I._rule(side, 4)
+            assert np.abs(R["xp"] - R["xbar"]).max() < 1e-14     # identity paths: x' = xbar = x
+
+
+@pytest.mark.parametrize("mat2", ["out", "slab"])
+def test_other_sheet_raises(mat2):
+    """Side 1 the bottom sheet of the slab, side 2 only the top sheet (t = 0.15 < h):
+    nothing pairs the bottom. With D_h^2 the rest of the box the top faces' outward
+    normals equal side 1's (no candidates: uncovered area); with D_h^2 the slab they
+    are opposed and the path lines (sigma = e_z) of the top pass through xbar, but
+    the paths of the partners end t away from it."""
+    t = 0.15
+    p1 = slab_side(slab_mesh(t, 0.33), "slab", t, "bottom")
+    p2 = slab_side(slab_mesh(t, 0.25), mat2, t, "top")
+    msg = "uncovered area" if mat2 == "out" else "the path of its partner .* > the gap tolerance"
+    with pytest.raises(Exception, match=r"unpaired piece of Gamma_h\^1 \(side 1\).*" + msg):
+        pair(p1, p2)
