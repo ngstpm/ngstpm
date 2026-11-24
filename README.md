@@ -139,7 +139,9 @@ run the other way). `I = pair(p1, p2)` is the `Interface`: it subdivides
 `Gamma_h^2`, so every point `x` of `Gamma_h^i` has a partner `x'` on the
 facing `Gamma_h^j` whose own path ends at the same `xbar` (the two paths may
 meet at `xbar` with a kink). It raises if a piece of `Gamma_h^i` has no
-partner (h too large for the geometry, or inconsistent paths).
+partner (h too large for the geometry, or inconsistent paths). In 3D
+(tetrahedra) a segment is a pair of faces and its pieces are polygons, one
+quadrature rule per triangle of a piece.
 
 | | |
 |---|---|
