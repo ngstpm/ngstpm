@@ -61,3 +61,11 @@ def test_condensed_equals_uncondensed_and_coarsest_level(domains):
     assert sum(D1) + sum(D2) == 2052
     eu, eq = ex.errors(mesh, sols[0], D1, D2)
     assert np.isclose(eu, 4.919e-02, rtol=1e-3) and np.isclose(eq, 3.549, rtol=1e-3)
+
+
+def test_pruning_that_empties_a_side_raises():
+    """At 45 degrees the pruning erodes D_h^1 of the coarsest level to nothing (the band of
+    two face diameters does not bound it on tetrahedra): it raises instead of returning an
+    empty side."""
+    with pytest.raises(RuntimeError, match=r"removed every element of D_h\^1"):
+        ex.domains(MAXH, max_normal_deviation=45)

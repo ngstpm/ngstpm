@@ -108,7 +108,9 @@ def test_prune_infeasible_elements(side):
     D = unfitted_domain(mesh, disk, side, max_normal_deviation=45)[0]
     assert list(D) == list(unfitted_domain(mesh, ParametricCurve(circle_xy), side, max_normal_deviation=45)[0])
     assert all(D0[e] for e in range(mesh.ne) if D[e]) and sum(D) < sum(D0)
-    assert list(unfitted_domain(mesh, disk, side, max_normal_deviation=180)[0]) == list(D0)
+    assert list(unfitted_domain(mesh, disk, side, max_normal_deviation=None)[0]) == list(D0)
+    with pytest.raises(ValueError, match=r"\[0, 90\]"):
+        unfitted_domain(mesh, disk, side, max_normal_deviation=95)
     s = 1 if side == 1 else -1
     worst = 1.0
     for f in mesh.facets:

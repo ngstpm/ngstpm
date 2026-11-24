@@ -15,9 +15,9 @@ def unfitted_domain(mesh, phi, side=1, max_normal_deviation=None):
     geometry (ParametricCurve, BSplineCurve, PointCloud), which stands for
     its signed distance.
     max_normal_deviation: None (default) keeps every element; an angle in
-    degrees prunes D_h by prune_infeasible_elements (85 makes the carved
-    spheres of tests/test_pairing_3d pair: it removes the faces of Gamma_h
-    that fold or lie along the paths).
+    [0, 90] degrees prunes D_h by prune_infeasible_elements (85 makes the
+    carved spheres of tests/test_pairing_3d pair: it removes the faces of
+    Gamma_h that fold or lie along the paths).
     Returns (inner, gamma, ind): elements with phi < 0 at all vertices (D_h),
     facets with exactly one inner neighbour (Gamma_h), and a facet
     GridFunction equal to 1 on Gamma_h.
@@ -38,21 +38,26 @@ def unfitted_domain(mesh, phi, side=1, max_normal_deviation=None):
 def prune_infeasible_elements(mesh, inner, phi, side, max_deviation, band=2.0):
     """Drop from the element set inner (D_h^side) every element owning a facet of
     Gamma_h whose outward normal n_F deviates from the outward normal nu of
-    Omega_side, at the facet centroid c, by more than max_deviation degrees, and
-    repeat until no facet fails (removing an element exposes new facets); as
-    MATLAB SimplicialGrid/prune_infeasible_elements.
+    Omega_side, at the facet centroid c, by more than max_deviation degrees
+    (in [0, 90]), and repeat until no facet fails (removing an element exposes
+    new facets); after MATLAB SimplicialGrid/prune_infeasible_elements.
 
-    nu: grad phi / |grad phi| at c for a level set (central differences), the
-    normal of the closest point for an explicit geometry; negated for side 2.
     The test is signed: a facet facing back into D_h (n_F . nu < 0, a fold of
     the transfer paths) always fails; one along the paths (n_F . nu = 0)
     fails for max_deviation < 90. Only facets within band * (their diameter)
-    of Gamma are judged (distance |phi| / |grad phi|, or to the closest point),
-    so that the facets exposed by the pruning far from Gamma are not, and the
-    removal does not run across the domain. Returns a new BitArray.
+    of Gamma are judged, so that the facets exposed far from Gamma are not.
+    In 3D this band does not bound the erosion: on Netgen tetrahedra around the
+    unit sphere 45 degrees empties D_h^1 (maxh 0.3, 0.4), and the pruning raises
+    if it empties a side. Returns a new BitArray.
+
+    Differences from MATLAB: nu is grad phi / |grad phi| at c (central
+    differences; the normal of the closest point for an explicit geometry),
+    not the normal at the projection of c on Gamma (the same for a signed
+    distance); the distance to Gamma is |phi| / |grad phi| (first order); the
+    side is given, not inferred; facets on the mesh boundary are not judged.
     """
-    if not 0 <= max_deviation <= 180:
-        raise ValueError(f"max_deviation must be an angle in [0, 180] degrees, not {max_deviation!r}")
+    if not 0 <= max_deviation <= 90:
+        raise ValueError(f"max_deviation must be an angle in [0, 90] degrees, not {max_deviation!r}")
     inner = BitArray(inner)
     cosb = np.cos(np.radians(max_deviation))
     V = np.array([v.point for v in mesh.vertices])[:, :mesh.dim]
@@ -62,7 +67,11 @@ def prune_infeasible_elements(mesh, inner, phi, side, max_deviation, band=2.0):
             return np.asarray(N, dtype=float), np.linalg.norm(C - P, axis=1)
     else:
         from .paths import _Ray
-        ray = _Ray(mesh, phi, 1e-12, 1)
+        try:
+            ray = _Ray(mesh, phi, 1e-12, 1)
+        except ValueError as err:
+            raise ValueError("unfitted_domain(..., max_normal_deviation=...): the level set must depend on "
+                             "its arguments only, phi(X, Y) -> CF of X, Y (not a GridFunction)") from err
 
         def normal_distance(C):
             g = ray.grad(C)
@@ -91,6 +100,9 @@ def prune_infeasible_elements(mesh, inner, phi, side, max_deviation, band=2.0):
             return inner
         for e in bad:
             inner[e] = False
+        if not any(inner):
+            raise RuntimeError(f"prune_infeasible_elements: pruning at {max_deviation} degrees removed every "
+                               f"element of D_h^{side}")
 
 
 def _vertex_values(mesh, phi):
