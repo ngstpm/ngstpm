@@ -8,7 +8,8 @@
 // facet F of Gamma_h^1 and one facet F' of Gamma_h^2; its pieces are the
 // parts of F and F' whose paths end on that arc. In 3D (D10) a segment is a
 // pair (F, F') of faces whose paths' ends overlap on Gamma; its pieces are
-// polygons, computed per side in local charts (src/interface3d.cpp).
+// polygons, computed per side in local charts from flat images of the path
+// map on m_F^2 subtriangles of each face F (src/interface3d.cpp).
 
 #include <comp.hpp>
 #include <python_ngstd.hpp>
@@ -61,7 +62,8 @@ public:
   // pieces of area below merge_tol h^2 are dropped (also image triangles that small raise);
   // gap_tol h is the depth of the strips beyond the rims of open surfaces, how far a
   // partner x' may lie outside its face F' (the D14 absorption as in 2D) and how far the
-  // path of x' may end from xbar.
+  // path of x' may end from xbar; the path map is resolved on subtriangles of the faces to
+  // 0.2 gap_tol h across the paths (at most 16^2 per face, else raises).
   Interface (IfcSide s1, IfcSide s2, double amerge, double agap);
   int Dim () const { return dim; }
   double MergeTol () const { return merge_tol; }
