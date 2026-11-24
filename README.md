@@ -141,7 +141,13 @@ facing `Gamma_h^j` whose own path ends at the same `xbar` (the two paths may
 meet at `xbar` with a kink). It raises if a piece of `Gamma_h^i` has no
 partner (h too large for the geometry, or inconsistent paths). In 3D
 (tetrahedra) a segment is a pair of faces and its pieces are polygons, one
-quadrature rule per triangle of a piece.
+quadrature rule per triangle of a piece. A carved staircase in 3D may fold
+(faces of `Gamma_h` facing back into `D_h`) or not be a surface (four faces
+at an edge), and `pair` raises there;
+`unfitted_domain(mesh, phi, side, max_normal_deviation=85)` drops the
+elements owning faces whose normal deviates from that of `Gamma` by more
+than 85 degrees (as MATLAB's `prune_infeasible_elements`), which removes
+them on the carved spheres of the tests.
 
 | | |
 |---|---|
@@ -215,5 +221,7 @@ python examples/poisson_tpm_3d.py       # Dirichlet: ball, torus (a few minutes)
 python examples/poisson_tpm_neumann.py  # Neumann condition on the unfitted boundary
 python examples/poisson_interface.py    # interface problem: fitted, snapped, unfitted
 python examples/poisson_interface_two_meshes.py  # the same on two non-matching meshes
+python examples/poisson_interface_two_meshes_3d.py  # two meshes, unit sphere (a few minutes)
+python examples/poisson_interface_3d.py  # one carved background mesh, unit sphere (pruned)
 pytest
 ```
