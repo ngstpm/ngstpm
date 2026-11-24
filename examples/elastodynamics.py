@@ -254,6 +254,22 @@ def run(mesh, order, eta, mat, dt, nsteps, monitor=None, **kw):
     return r
 
 
+def velocity_rows(lhs, trial, test, lam, mu, tauS, cs, cm, D=None):
+    """Add the HDG rows of (sigma, v, omega, vhat) on the elements of D, except the equation
+    of vhat, with cs (A sigma, tau) and cm (v, w), to lhs; returns sigma_hat n =
+    sigma n - tauS (v - vhat)."""
+    (sP, w1, w2, v, om, vhat), (tP, z1, z2, w, xi, _) = trial, test
+    n = specialcf.normal(2)
+    dV, dS = dx(definedonelements=D), dx(element_boundary=True, definedonelements=D)
+    sigma, tau_ = stress(sP, w1, w2), stress(tP, z1, z2)
+    sigmahat_n = sigma * n - tauS * (v - vhat)
+    lhs += (cs * InnerProduct(compliance(sigma, lam, mu), tau_) - InnerProduct(grad(v), tau_)
+            + InnerProduct(skew(om), tau_)) * dV + (v - vhat) * (tau_ * n) * dS
+    lhs += InnerProduct(sigma, skew(xi)) * dV
+    lhs += cm * v * w * dV + InnerProduct(sigma, grad(w)) * dV - sigmahat_n * w * dS
+    return sigmahat_n
+
+
 class VelocityStress(Elastodynamics):
     """The stress-velocity-rotation form by Crank-Nicolson: the state U = (sigma, v, omega,
     vhat) at t^n and the displacement eta^n in the v block of E. Arguments as Elastodynamics
@@ -299,16 +315,10 @@ class VelocityStress(Elastodynamics):
     def bilinear(self, cs, cm):
         """The HDG rows of (sigma, v, omega, vhat) with cs (A sigma, tau) and cm (v, w)."""
         mesh, D, (lam, mu) = self.mesh, self.D, (self.mat["lam"], self.mat["mu"])
-        (sP, w1, w2, v, om, vhat), (tP, z1, z2, w, xi, muh) = self.trial[:6], self.test[:6]
-        n = specialcf.normal(2)
-        dV, dS = self.dV, dx(element_boundary=True, definedonelements=D)
-        sigma, tau_ = stress(sP, w1, w2), stress(tP, z1, z2)
-        sigmahat_n = sigma * n - self.tauS * (v - vhat)
+        (sP, w1, w2, v, om, vhat), muh = self.trial[:6], self.test[5]
+        sigma = stress(sP, w1, w2)
         lhs = BilinearForm(self.fes, condense=True)
-        lhs += (cs * InnerProduct(compliance(sigma, lam, mu), tau_) - InnerProduct(grad(v), tau_)
-                + InnerProduct(skew(om), tau_)) * dV + (v - vhat) * (tau_ * n) * dS
-        lhs += InnerProduct(sigma, skew(xi)) * dV
-        lhs += cm * v * w * dV + InnerProduct(sigma, grad(w)) * dV - sigmahat_n * w * dS
+        sigmahat_n = velocity_rows(lhs, self.trial[:6], self.test[:6], lam, mu, self.tauS, cs, cm, D)
         if self.phi is None:
             lhs += sigmahat_n * muh * dx(element_boundary=True)      # muh vanishes on Dirichlet faces
         else:
