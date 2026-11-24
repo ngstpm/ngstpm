@@ -1,5 +1,5 @@
 """pair(p1, p2) in 3D (D10): pieces of the faces of Gamma_h^i by clipping in the
-chart of each face, the per-face coverage check and the partner rules.
+charts of their subtriangles, the per-face coverage check and the partner rules.
 
 Tolerances (ngstpm.interface; in 3D relative to h = the larger of the two
 sides' mean edge lengths of Gamma_h), measured on the configurations below
@@ -20,6 +20,20 @@ sides' mean edge lengths of Gamma_h), measured on the configurations below
   test_absorption (x' up to GAP_TOL h outside F'). The rim strips (depth GAP_TOL
   h) covered at most 1e-3 h^2 per face on the cylinder (measured with the
   charts in the planes of the image triangles; not re-measured).
+Subdivision (m_F^2 subtriangles per face, the path map resolved to 0.2 GAP_TOL h
+across the paths): all the configurations above have m = 1 on every face, and
+their segments and rules are bitwise those without subdivision. Carved sides of
+one background mesh (unit sphere, box half-width about 1.5; measured, the larger
+ones not in the suite): structured n = 6, 8, 12 and netgen maxh 0.3 (h = 0.62,
+0.47, 0.31, 0.42) pair, m from 1 to 8 (mostly 2, 4), x' at most 4.6e-3, 1.0e-2,
+1.4e-2 and 5.0e-2 h outside F' (netgen 0.3: 187 of 2.6e5 points absorbed, miss
+up to 6.7e-3 h, at faces nearly parallel to their paths, n_F . sigma = 0.009),
+per face up to 6.9e-10 of the area dropped in slivers (each below MERGE_TOL h^2:
+corner overlaps of subtriangles), per side 6e-13 - 4.4e-11; pair 15 - 21 s (the
+order-12 check of the rules on 37 - 57 thousand triangles). Structured n = 10,
+16, 20 contain a face in the plane z = 0 through the centre (parallel to its
+paths: no chart; they fold too, n_F . sigma down to -0.03), netgen 0.2 folds (faces with n_F . sigma < 0: 1 on side 1, 3
+on side 2), netgen 0.4, 0.15 are not surfaces (an edge in 4 faces): pair raises.
 """
 
 from functools import lru_cache
@@ -27,7 +41,7 @@ from functools import lru_cache
 import numpy as np
 import pytest
 from netgen.csg import CSGeometry, Cylinder, OrthoBrick, Plane, Pnt, Sphere, Vec
-from ngsolve import BitArray, CF, GridFunction, Integrate, L2, Mesh, VOL, ds, sqrt, x, y, z
+from ngsolve import BitArray, CF, GridFunction, Integrate, L2, Mesh, VOL, ds, exp, sqrt, x, y, z
 from ngsolve.meshes import MakeStructured3DMesh
 
 from ngstpm import pair, transfer_paths
@@ -156,6 +170,7 @@ def test_two_meshes(h1, h2, order):
     I = pair(p1, p2)
     r = check(I, p1, p2)
     assert_pairing(r, sliver=10 * MERGE_TOL)
+    assert np.all(I.segments().m == 1)                         # paths of length O(h^2): no subdivision
     assert r["nseg"] >= max(sum(p1.facets), sum(p2.facets))
     if h1 == h2:
         assert r["nseg"] == sum(p1.facets) == sum(p2.facets)
@@ -170,6 +185,7 @@ def test_fitted_one_mesh():
     assert_pairing(check(I, p1, p2))
     S = I.segments()
     assert I.nsegments == sum(p1.facets) and np.all(S.facet[:, 0] == S.facet[:, 1])
+    assert np.all(S.m == 1)
     for side in (1, 2):
         R = I._rule(side, 8)
         assert np.abs(R["xp"] - R["x"]).max() < 1e-9
@@ -288,8 +304,10 @@ def test_open_surface(h1, h2):
     (per side 1.4e-16 relative); x' at most 5.5e-3 h outside F'."""
     p1, p2 = two_mesh_paths(*cylinder_meshes(h1, h2), phi=cylinder)
     for a, b in ((p1, p2), (p2, p1)):
-        r = check(pair(a, b), a, b)
+        I = pair(a, b)
+        r = check(I, a, b)
         assert_pairing(r, sliver=10 * MERGE_TOL, side_tiling=1e-10)
+        assert np.all(I.segments().m == 1)
         assert r["over"] < 0.01
 
 
@@ -350,13 +368,15 @@ def test_thin_slab(t):
 def test_other_sheet_raises(mat2):
     """Side 1 the bottom sheet of the slab, side 2 only the top sheet (t = 0.15 < h):
     nothing pairs the bottom. With D_h^2 the rest of the box the top faces' outward
-    normals equal side 1's (no candidates: uncovered area); with D_h^2 the slab they
+    normals equal side 1's (the faces near are all rejected by orientation: uncovered
+    area, the two sides not on opposite sides of Gamma); with D_h^2 the slab they
     are opposed and the path lines (sigma = e_z) of the top pass through xbar, but
     the paths of the partners end t away from it."""
     t = 0.15
     p1 = slab_side(slab_mesh(t, 0.33), "slab", t, "bottom")
     p2 = slab_side(slab_mesh(t, 0.25), mat2, t, "top")
-    msg = "uncovered area" if mat2 == "out" else "the path of its partner .* > the gap tolerance"
+    msg = ("uncovered area .* must lie on opposite sides of Gamma" if mat2 == "out"
+           else "the path of its partner .* > the gap tolerance")
     with pytest.raises(Exception, match=r"unpaired piece of Gamma_h\^1 \(side 1\).*" + msg):
         pair(p1, p2)
 
@@ -404,6 +424,7 @@ def test_absorption(shift):
         return
     I = pair(p1, p2)
     r = check(I, p1, p2)
+    assert np.all(I.segments().m == 1)                         # affine on each face: the spread is absorbed
     assert r["defect"] <= 0 and r["side_tiling"] < 1e-12 and r["inref"] < 1e-12 and r["onface"] < 1e-12
     assert r["over"] <= GAP_TOL * (1 + 1e-12)                  # x' at most GAP_TOL h outside F'
     for side in (1, 2):
@@ -413,26 +434,132 @@ def test_absorption(shift):
         assert miss.max() <= GAP_TOL * r["h"]
 
 
-@pytest.mark.parametrize("kind,n,msg", [("structured", 8, r"unpaired piece of Gamma_h\^1 \(side 1\) at .* miss by"),
-                                        ("netgen", 0.4, r"Gamma_h\^1 is not a surface")])
-def test_carved_raises(kind, n, msg):
-    """Carved sides of one background mesh (the unit sphere; the elements of D_h^i
-    inside / outside it, paths of length O(h)) are outside the conditions of pair
-    in 3D, which raises rather than pairing them. Structured, n = 8 (h = 0.47): no
-    fold, but the path map is affine on the faces only up to 0.15 h normal to the
-    paths, so a rule point is absorbed beyond GAP_TOL h (miss 0.0241 > 0.0235).
-    Netgen, maxh 0.4: 4 faces of Gamma_h^1 meet at an edge."""
-    from ngstpm import unfitted_domain
+def carved_mesh(kind, n, width=3.1):
+    """The background mesh of a box about (-1.5, 1.5)^3: structured, n^3 cubes of 6 tetrahedra,
+    the box of that width with its corner at (-1.53, -1.56, -1.55) (off the centre of the
+    sphere), or netgen, maxh n."""
     if kind == "structured":
-        mesh = MakeStructured3DMesh(hexes=False, nx=n, ny=n, nz=n,
-                                    mapping=lambda X, Y, Z: (3.1 * X - 1.53, 3.1 * Y - 1.56, 3.1 * Z - 1.55))
-    else:
-        geo = CSGeometry()
-        geo.Add(OrthoBrick(Pnt(-1.5, -1.5, -1.5), Pnt(1.5, 1.5, 1.5)))
-        mesh = Mesh(geo.GenerateMesh(maxh=n))
+        return MakeStructured3DMesh(hexes=False, nx=n, ny=n, nz=n, mapping=lambda X, Y, Z: (
+            width * X - 1.53, width * Y - 1.56, width * Z - 1.55))
+    geo = CSGeometry()
+    geo.Add(OrthoBrick(Pnt(-1.5, -1.5, -1.5), Pnt(1.5, 1.5, 1.5)))
+    return Mesh(geo.GenerateMesh(maxh=n))
+
+
+def carved_paths(kind, n, width=3.1):
+    """Carved sides of one background mesh: D_h^i the elements inside / outside the unit
+    sphere, Gamma_h^i their boundaries in the mesh, quasi-normal paths of length O(h)."""
+    from ngstpm import unfitted_domain
+    mesh = carved_mesh(kind, n, width)
     paths = []
     for side in (1, 2):
         D, F, _ = unfitted_domain(mesh, ball, side)
         paths.append(transfer_paths(mesh, ball, D, facets=F))
+    return paths
+
+
+def face_integral(P, f, n=6):
+    """The integral of the numpy function f over the triangles P (k, 3, 3): Gauss-Legendre on
+    the square collapsed to the triangle (exact for degree <= 2 n - 2)."""
+    g, w = np.polynomial.legendre.leggauss(n)
+    g, w = (g + 1) / 2, w / 2
+    u, v = np.meshgrid(g, g, indexing="ij")
+    W = np.outer(w, w) * (1 - u)                               # x = P0 + u (P1 - P0) + v (1 - u) (P2 - P0)
+    X = P[:, None, None, 0] + u[..., None] * (P[:, None, None, 1] - P[:, None, None, 0]) \
+        + (v * (1 - u))[..., None] * (P[:, None, None, 2] - P[:, None, None, 0])
+    return (2 * tri_area(P) * np.einsum("kij,ij->k", f(X[..., 0], X[..., 1], X[..., 2]), W)).sum()
+
+
+def test_carved_pairs():
+    """Carved sides (structured, n = 6, h = 0.62): the path map is 0.22 h (side 1) from affine on
+    a face, so the faces are subdivided: m = 4, 8 on side 1 (10, 38 of 48 faces), 2, 4 on side 2
+    (34, 110 of 144). Measured: per face up to 5.6e-10 of the area in slivers below MERGE_TOL h^2
+    dropped (2.5e-10 h^2; small overlaps of subtriangles at their corners), per side 4.4e-11
+    relative; x' at most 4.6e-3 h outside F'; no point absorbed. Integrate on the pieces = the
+    integral over the faces of Gamma_h^i (numpy), up to the dropped slivers."""
+    p1, p2 = carved_paths("structured", 6)
+    I = pair(p1, p2)
+    r = check(I, p1, p2)
+    assert_pairing(r, sliver=10 * MERGE_TOL, side_tiling=1e-10)
+    assert r["over"] < 0.01
+    S = I.segments()
+    for i, p in enumerate((p1, p2)):
+        m = {f: k for f, k in zip(S.facet[:, i], S.m[:, i])}
+        assert len(m) == sum(p.facets) and set(m.values()) <= {1, 2, 4, 8, 16}
+        assert max(m.values()) > 1
+        fd = face_data(p.mesh, p.facets)
+        P = np.array(list(fd.values()))
+        dropped = abs(tri_area(P).sum() - S.area[:, i].sum())
+        for cf, f in ((CF(1), lambda X, Y, Z: 1 + 0 * X), (x ** 5 + x * y * y * z * z, lambda X, Y, Z: X ** 5 + X * Y * Y * Z * Z)):
+            ref = face_integral(P, f)
+            scale = face_integral(P, lambda X, Y, Z: np.abs(f(X, Y, Z)))
+            fmax = np.abs(f(*P.reshape(-1, 3).T)).max()           # |f| at the vertices (|x| < 1.5)
+            assert abs(Integrate(cf * I.ds(side=i + 1), p.mesh) - ref) < 1e-12 * scale + 2 * fmax * dropped
+
+
+def folded_side(c, h=0.25, d=0.05, r=0.2):
+    """As tilted_side, with sigma = (s, 0, 1), d s = -c (x - 1/2) g, g a Gaussian of width r at
+    (1/2, 1/2): the path end of x is x + d s = x - c (x - 1/2) g, whose x-derivative at the
+    centre is 1 - c. For c > 1 the paths fold."""
+    geo = CSGeometry()
+    b = OrthoBrick(Pnt(0, 0, -0.3), Pnt(1, 1, -d))
+    geo.Add(b.mat("below"))
+    geo.Add((OrthoBrick(Pnt(0, 0, -0.3), Pnt(1, 1, 0.3)) - b).mat("above"))
+    mesh = Mesh(geo.GenerateMesh(maxh=h))
+    D = BitArray([el.mat == "below" for el in mesh.Elements(VOL)])
+    F = BitArray(mesh.nfacet)
+    F.Clear()
+    for f in mesh.facets:
+        els = [e.nr for e in f.elements]
+        F[f.nr] = len(els) == 2 and D[els[0]] != D[els[1]]
+    g = exp(-((x - 0.5) ** 2 + (y - 0.5) ** 2) / r ** 2)
+    sigma = CF((-c / d * (x - 0.5) * g, 0, 1))
+    return type("P", (), dict(mesh=mesh, elements=D, facets=F, target=CF((x, y, z)) - z * sigma, sigma=sigma))
+
+
+@pytest.mark.parametrize("c", [0.5, 1.5])
+def test_folded_paths(c):
+    """The bottom of the slab (identity paths) against folded_side(c). c = 0.5: no fold, but the
+    path map is not affine on the faces: m = 1, 2, 4 on 16, 14, 8 of the 38 faces of side 2 (1 on
+    side 1); measured: up to 9.5e-12 h^2 per face dropped in slivers (1.7e-12 of the
+    area of a side), x' at most 7.9e-3 h
+    outside F', no point absorbed. c = 1.5: the images of the subtriangles near the centre are
+    reversed: pair raises a fold (both orders of the sides)."""
+    p1 = slab_side(slab_mesh(0.3, 0.33), "slab", 0.3, "bottom")
+    p2 = folded_side(c)
+    if c > 1:
+        with pytest.raises(Exception, match=r"the paths of Gamma_h\^2 fold at the face .* oriented opposite"):
+            pair(p1, p2)
+        with pytest.raises(Exception, match=r"the paths of Gamma_h\^1 fold at the face"):
+            pair(p2, p1)
+        return
+    I = pair(p1, p2)
+    assert_pairing(check(I, p1, p2), sliver=10 * MERGE_TOL, side_tiling=1e-11)
+    S = I.segments()
+    assert S.m[:, 0].max() == 1 and S.m[:, 1].max() > 1
+
+
+@pytest.mark.parametrize("kind,n,msg", [("structured", 7, r"the paths of Gamma_h\^1 fold at the face .* same side"),
+                                        ("netgen", 0.4, r"Gamma_h\^1 is not a surface .* \(4 faces meet\)")])
+def test_carved_raises(kind, n, msg):
+    """Carved sides where Gamma_h^1 folds or is not a surface. Structured, n = 7, box width 3.0
+    (h = 0.51): faces of Gamma_h^1 whose outward normal is against the radial paths (here
+    counted independently; n_F . sigma down to -0.41 at a vertex): seen along the paths the image
+    of one of them and its neighbour's lie on the same side of their common edge. Netgen, maxh
+    0.4 (h = 0.48): 4 faces of Gamma_h^1 meet at an edge."""
+    paths = carved_paths(kind, n, 3.0)
+    if kind == "structured":
+        p = paths[0]
+        D = p.elements
+        against = 0
+        for f in p.mesh.facets:
+            if p.facets[f.nr]:
+                P = np.array([p.mesh[v].point for v in f.vertices])
+                el = next(e for e in f.elements if D[e.nr])
+                c = np.mean([p.mesh[v].point for v in p.mesh[el].vertices], axis=0)
+                nF = np.cross(P[1] - P[0], P[2] - P[0])
+                nF *= np.sign(nF.dot(P[0] - c))
+                against += np.min(P @ nF) < 0                    # radial paths x / |x| from inside
+        assert against > 0
     with pytest.raises(Exception, match=msg):
         pair(*paths)
