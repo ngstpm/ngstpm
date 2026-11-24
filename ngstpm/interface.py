@@ -105,7 +105,7 @@ class InterfaceSegments(NamedTuple):
 
 class InterfacePieces(NamedTuple):
     """I.segments() in 3D: n segments, each a pair of faces (F of Gamma_h^1, F' of
-    Gamma_h^2), axis 1 the side; the pieces are unions of triangles (m in all, on
+    Gamma_h^2), axis 1 the side; the pieces are unions of triangles (N in all, on
     F of side tri_side of segment tri_seg), in the face's reference coordinates
     (xi, eta): x = p0 + xi (p1 - p0) + eta (p2 - p0), p0, p1, p2 the face's
     vertices in mesh order. A piece may be empty on one side (area 0)."""
@@ -114,10 +114,10 @@ class InterfacePieces(NamedTuple):
     loc: np.ndarray      # (n, 2)          local facet number of F in el
     area: np.ndarray     # (n, 2)          physical area of the piece on F (0: empty)
     m: np.ndarray        # (n, 2)          F split into m^2 subtriangles (see pair)
-    tri_seg: np.ndarray  # (m,)            segment of the triangle
-    tri_side: np.ndarray # (m,)            side of the triangle (0: side 1, 1: side 2)
-    tri_ref: np.ndarray  # (m, 3, 2)       its vertices in F's reference coordinates
-    tri_x: np.ndarray    # (m, 3, 3)       its vertices in space
+    tri_seg: np.ndarray  # (N,)            segment of the triangle
+    tri_side: np.ndarray # (N,)            side of the triangle (0: side 1, 1: side 2)
+    tri_ref: np.ndarray  # (N, 3, 2)       its vertices in F's reference coordinates
+    tri_x: np.ndarray    # (N, 3, 3)       its vertices in space
 
 
 def _points(self, side, intorder=4):
