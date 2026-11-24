@@ -152,3 +152,37 @@ def test_solid_stabilisation_carried(monkeypatch):
     assert taus == [(1.0, 1.0 / hm.MATERIAL["mu_S"]), (1.0, 1.0)]
     assert np.all(np.isfinite(U[0])) and np.all(np.isfinite(U[1]))
     assert np.abs(U[0] - U[1]).max() > 1e-6 * np.abs(U[0]).max()
+
+
+def test_symmetric_gap_smoke():
+    """Symmetric gap delta = 0.005: two pieces of one mesh (Gamma_h^F at y = 0.5 - delta,
+    Gamma_h^S at 0.5 + delta, no element between), the coupling transferred across; 5 steps at
+    h = 0.3, k = 1. The peaks are continuous in delta: within 5% of delta = 1e-6 (the same split
+    geometry; the conforming no-gap mesh is a different mesh and differs by more at h = 0.3)."""
+    mesh, DF, DS = hm.channel_mesh(0.3, 0.005)
+    ys = {b: {round(mesh[v].point[1], 12) for e in mesh.Boundaries(b).Elements() for v in e.vertices}
+          for b in ("interface_fluid", "interface")}
+    assert ys == {"interface_fluid": {0.495}, "interface": {0.505}}
+    assert hm.interface_heights(0.005, "fluid") == (0.49, 0.5)   # wall conforming to Sigma
+    quiet = lambda *a, **k: None
+    peaks = []
+    for gap in (1e-6, 0.005):
+        run, snaps, _, _ = hm.benchmark(0.3, 1, 1e-4, 5, snapshots=(5,), log=quiet, gap=gap)
+        assert np.all(np.isfinite(run.U.FV().NumPy()))
+        P = snaps[5]
+        peaks.append([P[name][1].max() for name in hm.PROFILES])
+    assert peaks[1] == pytest.approx(peaks[0], rel=0.05)
+
+
+def test_fluid_gap_smoke():
+    """split = "fluid", delta = 0.005: the wall keeps its thickness and meets Sigma (solid paths
+    of length 0), the fluid stops at 0.5 - 2 delta; 5 steps at h = 0.3, k = 1, peaks within 5% of
+    the no-gap run (at h = 0.3 the early flow peak is mesh-sensitive: the symmetric split's mesh
+    gives 0.74 against 0.58 here and with no gap)."""
+    quiet = lambda *a, **k: None
+    peaks = []
+    for gap, split in ((0.0, "symmetric"), (0.005, "fluid")):
+        run, snaps, _, _ = hm.benchmark(0.3, 1, 1e-4, 5, snapshots=(5,), log=quiet, gap=gap, split=split)
+        assert run.ell_S == 0.0
+        peaks.append([snaps[5][name][1].max() for name in hm.PROFILES])
+    assert peaks[1] == pytest.approx(peaks[0], rel=0.05)

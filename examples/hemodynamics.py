@@ -55,7 +55,9 @@ import numpy as np
 from ngsolve import *
 
 from component_bc import DIRICHLET, NEUMANN
+from elasticity import compliance, skew
 from fsi_transient import FSITransient, rss_mb, t
+from ngstpm import SideEval
 
 P_MAX, T_MAX = 1.333e4, 3e-3
 PHI = lambda X, Y: 0.5 - Y                                           # wall {phi < 0} = {y > 0.5}
@@ -77,17 +79,44 @@ def p_in(time=t):
     return IfPos(T_MAX - time, P_MAX / 2 * (1 - cos(2 * PI * time / T_MAX)), 0)
 
 
-def channel_mesh(maxh):
+SPLITS = ("symmetric", "fluid")
+
+
+def interface_heights(gap, split="symmetric"):
+    """(y of Gamma_h^F, y of Gamma_h^S) for the gap delta (MATLAB hemodynamics.m gap_split): the
+    total gap is 2 delta in both splits; "symmetric" retreats both sides by delta, "fluid" keeps
+    the wall conforming to Sigma (full thickness, solid paths of length 0) and retreats the
+    fluid by 2 delta."""
+    if split not in SPLITS:
+        raise ValueError(f"split must be one of {SPLITS}, not {split!r}")
+    return (0.5 - gap, 0.5 + gap) if split == "symmetric" else (0.5 - 2 * gap, 0.5)
+
+
+def channel_mesh(maxh, gap=0.0, split="symmetric"):
     """Fluid (0,6) x (0,0.5) (domain index 0), wall (0,6) x (0.5,0.6) (index 1), one Netgen mesh
     conforming on Sigma = {y = 0.5}. Boundaries: inflow, outflow, symmetry (fluid), top, wall_in,
-    wall_out (wall), interface. Returns mesh, DF, DS."""
+    wall_out (wall), interface. Returns mesh, DF, DS.
+    gap > 0: the symmetric gap of MATLAB (hemodynamics.m gap_split = "symmetric"): the fluid
+    (0,6) x (0,0.5-gap) and the wall (0,6) x (0.5+gap,0.6), two pieces of one mesh with no
+    element in between; Gamma_h^F = "interface_fluid" (y = 0.5-gap), Gamma_h^S = "interface"
+    (y = 0.5+gap); Sigma stays y = 0.5, reached by vertical paths of length gap.
+    split = "fluid": the fluid (0,6) x (0,0.5-2 gap), the wall (0,6) x (0.5,0.6) (interface_heights)."""
     from netgen.geom2d import SplineGeometry
     geo = SplineGeometry()
-    p = [geo.AppendPoint(*q) for q in ((0, 0), (6, 0), (6, 0.5), (6, 0.6), (0, 0.6), (0, 0.5))]
-    for a, b, bc, left in ((0, 1, "symmetry", 1), (1, 2, "outflow", 1), (2, 3, "wall_out", 2),
-                           (3, 4, "top", 2), (4, 5, "wall_in", 2), (5, 0, "inflow", 1)):
-        geo.Append(["line", p[a], p[b]], leftdomain=left, rightdomain=0, bc=bc)
-    geo.Append(["line", p[5], p[2]], leftdomain=2, rightdomain=1, bc="interface")
+    if gap == 0:
+        p = [geo.AppendPoint(*q) for q in ((0, 0), (6, 0), (6, 0.5), (6, 0.6), (0, 0.6), (0, 0.5))]
+        for a, b, bc, left in ((0, 1, "symmetry", 1), (1, 2, "outflow", 1), (2, 3, "wall_out", 2),
+                               (3, 4, "top", 2), (4, 5, "wall_in", 2), (5, 0, "inflow", 1)):
+            geo.Append(["line", p[a], p[b]], leftdomain=left, rightdomain=0, bc=bc)
+        geo.Append(["line", p[5], p[2]], leftdomain=2, rightdomain=1, bc="interface")
+    else:
+        yF, yS = interface_heights(gap, split)
+        p = [geo.AppendPoint(*q) for q in ((0, 0), (6, 0), (6, yF), (0, yF), (0, yS), (6, yS), (6, 0.6),
+                                           (0, 0.6))]
+        for a, b, bc, left in ((0, 1, "symmetry", 1), (1, 2, "outflow", 1), (2, 3, "interface_fluid", 1),
+                               (3, 0, "inflow", 1), (4, 5, "interface", 2), (5, 6, "wall_out", 2),
+                               (6, 7, "top", 2), (7, 4, "wall_in", 2)):
+            geo.Append(["line", p[a], p[b]], leftdomain=left, rightdomain=0, bc=bc)
     mesh = Mesh(geo.GenerateMesh(maxh=maxh))
     DF = BitArray([e.index == 0 for e in mesh.Elements(VOL)])
     return mesh, DF, ~DF
@@ -104,15 +133,19 @@ def boundary_data(mesh):
     return (TABLE_F, zero, gN), (TABLE_S, zero, None)
 
 
-def setup(maxh, order=2, dt=1e-4, mat=MATERIAL, S_solid=1.0, solver="umfpack"):
-    """The FSITransient object of the benchmark on channel_mesh(maxh), at rest (zero state).
-    S_solid: the solid stabilisation S_S (tau_S = S_solid/mu_S); S_F = mu_F."""
-    mesh, DF, DS = channel_mesh(maxh)
+def setup(maxh, order=2, dt=1e-4, mat=MATERIAL, S_solid=1.0, solver="umfpack", gap=0.0, split="symmetric"):
+    """The FSITransient object of the benchmark on channel_mesh(maxh, gap, split), at rest (zero
+    state). S_solid: the solid stabilisation S_S (tau_S = S_solid/mu_S); S_F = mu_F."""
+    mesh, DF, DS = channel_mesh(maxh, gap, split)
     bcF, bcS = boundary_data(mesh)
     zero = CF((0, 0))
     g = lambda X, Y: CF((X - X, Y - Y))          # g = 0 (a constant 0 CF leaves the form without a test function)
     run = FSITransient(mesh, order, PHI, DF, DS, mat, zero, zero, g, None, bcF, bcS, dt,
-                       tau=(1.0, S_solid / mat["mu_S"]), solver=solver)
+                       tau=(1.0, S_solid / mat["mu_S"]), solver=solver,
+                       facets=(None, None) if gap == 0 else (mesh.Boundaries("interface_fluid"),
+                                                             mesh.Boundaries("interface")))
+    run.gap, run.split = gap, split
+    run.ell_S = interface_heights(gap, split)[1] - 0.5 if gap > 0 else 0.0     # solid path length
     return run
 
 
@@ -149,16 +182,27 @@ def pressure_profile(mesh, p, DF):
     return xc[i], pm[i]
 
 
-def displacement_profile(mesh, etahat, order):
-    """(x, etahat_y) on Sigma at order + 1 Gauss points per interface face, sorted in x."""
+def displacement_profile(mesh, etahat, order, ell=0.0, G=None, DS=None):
+    """(x, d_y) on Sigma at order + 1 Gauss points per interface face, sorted in x.
+    ell = 0: d = etahat. ell > 0: the faces of Gamma_h^S at y = 0.5 + ell, and d = etahat
+    transferred down the vertical path to Sigma (MATLAB hemodynamics.m:660-667),
+    d(xbar) = etahat(x) + int_x^xbar G dl, G = A sigma_S + S(gamma_S) of the solid element of x
+    (polynomial extrapolation into the gap, k + 2 Gauss points on the path)."""
     g = (np.polynomial.legendre.leggauss(order + 1)[0] + 1) / 2
+    tq, wq = np.polynomial.legendre.leggauss(order + 2)
     X, V = [], []
     for e in mesh.Boundaries("interface").Elements():
         a, b = (mesh[v].point for v in e.vertices)
         for si in g:
             px, py = a[0] + si * (b[0] - a[0]), a[1] + si * (b[1] - a[1])
             X.append(px)
-            V.append(etahat(mesh(px, py, VOL_or_BND=BND))[1])
+            d = etahat(mesh(px, py, VOL_or_BND=BND))[1]
+            if ell > 0:
+                inside = mesh(px, py + 1e-9 * ell)                # in the solid element of x
+                for tj, wj in zip(tq, wq):
+                    yq = py - ell * (tj + 1) / 2
+                    d += wj / 2 * (-ell) * SideEval(G[1, 1], CF((px, yq)), mesh, DS)(inside)
+            V.append(d)
     i = np.argsort(X)
     return np.array(X)[i], np.array(V)[i]
 
@@ -167,13 +211,19 @@ def profiles(run):
     """The three profiles of the current state of run (dict name -> (x, value))."""
     fluid, p_h, solid, _ = run.fields()
     return dict(flow=flow_profile(run.mesh, fluid[3]), pressure=pressure_profile(run.mesh, p_h, run.DF),
-                displacement=displacement_profile(run.mesh, solid[3], run.order))
+                displacement=solid_displacement(run, solid))
+
+
+def solid_displacement(run, solid):
+    """displacement_profile of the solid fields (sigma, eta, gamma, etahat, ...) of run."""
+    G = compliance(solid[0], run.mat["lam_S"], run.mat["mu_S"]) + skew(solid[2])
+    return displacement_profile(run.mesh, solid[3], run.order, run.ell_S, G, run.DS)
 
 
 # ---- the benchmark run ----------------------------------------------------------------------
 
 def benchmark(maxh=0.1, order=2, dt=1e-4, nsteps=120, snapshots=None, mat=MATERIAL, S_solid=1.0,
-              solver="umfpack", log=print):
+              solver="umfpack", log=print, gap=0.0, split="symmetric"):
     """March nsteps from rest; at each snapshot step (default snapshot_steps(dt)) the three
     profiles, and the pressure profile of the step before (for the two-step average). Returns
     (run, snaps, rss, timing): snaps[step] = dict of profiles (+ "pressure_prev"), rss = RSS (MB)
@@ -181,10 +231,10 @@ def benchmark(maxh=0.1, order=2, dt=1e-4, nsteps=120, snapshots=None, mat=MATERI
     if snapshots is None:
         snapshots = snapshot_steps(dt)
     t0 = clock.time()
-    run = setup(maxh, order, dt, mat, S_solid, solver)
+    run = setup(maxh, order, dt, mat, S_solid, solver, gap, split)
     t_setup = clock.time() - t0
     nF = sum(1 for e in run.mesh.Elements(VOL) if run.DF[e.nr])
-    log(f"channel h = {maxh}: fluid {nF} elements, wall {run.mesh.ne - nF}; ndof {run.fes.ndof}, "
+    log(f"channel h = {maxh}, gap = {gap:g} ({split}): fluid {nF} elements, wall {run.mesh.ne - nF}; ndof {run.fes.ndof}, "
         f"free {run.free.NumSet()}; setup {t_setup:.1f} s, RSS {rss_mb():.0f} MB", flush=True)
     snaps, rss, prev = {}, [], {}
 
@@ -200,7 +250,7 @@ def benchmark(maxh=0.1, order=2, dt=1e-4, nsteps=120, snapshots=None, mat=MATERI
                 f"pressure {P['pressure'][1].max():.6g}, d_y {P['displacement'][1].max():.6g}; RSS {rss[-1]:.0f} MB",
                 flush=True)
         elif r.steps % 10 == 0:
-            d = displacement_profile(r.mesh, r.fields()[2][3], r.order)[1]
+            d = solid_displacement(r, r.fields()[2])[1]
             log(f"  step {r.steps:4d} (t = {1e3 * r.time:.1f} ms), max |d_y| on Sigma = {abs(d).max():.4g}, "
                 f"RSS {rss[-1]:.0f} MB", flush=True)
     t1 = clock.time()
@@ -255,17 +305,23 @@ if __name__ == "__main__":
     p.add_argument("--S-solid", type=float, default=1.0,
                    help="solid stabilisation S_S (default 1 = MATLAB; mu_S = decision 2)")
     p.add_argument("--solver", choices=("umfpack", "superlu"), default="umfpack")
+    p.add_argument("--gap", type=float, default=0.0,
+                   help="gap delta (default 0); total gap 2 delta, placed by --split")
+    p.add_argument("--split", choices=SPLITS, default="symmetric",
+                   help="symmetric: fluid up to 0.5 - delta, wall from 0.5 + delta; fluid: fluid up to "
+                        "0.5 - 2 delta, wall conforming to Sigma")
     a = parse(p)
     if a.k is None:
         a.k, a.h = 2, [0.1]
     nsteps = a.steps if a.steps is not None else round(a.T / a.dt)
     mat = dict(MATERIAL, mu_F=a.mu_f)
-    print(f"hemodynamics benchmark, k = {a.k}, h = {a.h[0]}, dt = {a.dt}, {nsteps} steps, material {mat}, "
+    print(f"hemodynamics benchmark, k = {a.k}, h = {a.h[0]}, dt = {a.dt}, {nsteps} steps, gap {a.gap:g} ({a.split}), material {mat}, "
           f"S_F = mu_F, S_S = {a.S_solid:g}, solver {a.solver}", flush=True)
     snapshots = snapshot_steps(a.dt)
-    run, snaps, rss, timing = benchmark(a.h[0], a.k, a.dt, nsteps, snapshots, mat, a.S_solid, a.solver)
+    run, snaps, rss, timing = benchmark(a.h[0], a.k, a.dt, nsteps, snapshots, mat, a.S_solid, a.solver,
+                                        gap=a.gap, split=a.split)
     print_table(snaps, a.dt)
     if a.out:
         save_run(a.out, run, snaps, rss, timing,
-                 dict(driver="hemodynamics", k=a.k, h=a.h[0], dt=a.dt, steps=nsteps, material=mat,
+                 dict(driver="hemodynamics", k=a.k, h=a.h[0], dt=a.dt, steps=nsteps, gap=a.gap, split=a.split, material=mat,
                       S_F=a.mu_f, S_S=a.S_solid, solver=a.solver, start="euler", snapshots=list(snapshots)))
