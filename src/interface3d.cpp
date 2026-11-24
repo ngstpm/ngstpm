@@ -777,6 +777,27 @@ void Interface::Rule3D (int side, size_t s, int intorder, Array<IfcPoint> & pts,
     Vec<3> xq = PointAt3 (G, u), sg = UnitSigma3 (P, G, xq, lh), w = xbar - xq;
     return Vec<3> (w - InnerProduct (w, sg) * sg);
   };
+  // Gauss-Newton on the miss from u (Jacobian by differences); returns the miss at the final u
+  auto newton = [&] (const Vec<3> & xbar, Vec<2> & u)
+  {
+    Vec<3> res = miss (xbar, u);
+    for (int it = 0; it < 30 && L2Norm (res) > 1e-14 * scale; it++)
+      {
+        Mat<3,2> J;
+        for (int l = 0; l < 2; l++)
+          {
+            Vec<2> ul = u; ul(l) += 1e-7;
+            Vec<3> dr = miss (xbar, ul) - res;
+            for (int a = 0; a < 3; a++) J(a, l) = 1e7 * dr(a);
+          }
+        Mat<2,2> JtJ = Trans (J) * J;
+        Vec<2> du = -1.0 * (Inv (JtJ) * (Trans (J) * res));
+        u += du;
+        res = miss (xbar, u);
+        if (L2Norm (du) < 1e-15) break;
+      }
+    return res;
+  };
   size_t q = 0;
   for (auto & T : tri)
     {
@@ -793,22 +814,7 @@ void Interface::Rule3D (int side, size_t s, int intorder, Array<IfcPoint> & pts,
           // the partner on the plane of F': its own path line passes through xbar (Gauss-Newton
           // on the 2 reference coordinates, Jacobian by differences), from the affine guess
           Vec<2> w = C(pt.xbar) - c0, u (Cross2 (w, d2) / det, Cross2 (d1, w) / det);
-          Vec<3> res = miss (pt.xbar, u);
-          for (int it = 0; it < 30 && L2Norm (res) > 1e-14 * scale; it++)
-            {
-              Mat<3,2> J;
-              for (int l = 0; l < 2; l++)
-                {
-                  Vec<2> ul = u; ul(l) += 1e-7;
-                  Vec<3> dr = miss (pt.xbar, ul) - res;
-                  for (int a = 0; a < 3; a++) J(a, l) = 1e7 * dr(a);
-                }
-              Mat<2,2> JtJ = Trans (J) * J;
-              Vec<2> du = -1.0 * (Inv (JtJ) * (Trans (J) * res));
-              u += du;
-              res = miss (pt.xbar, u);
-              if (L2Norm (du) < 1e-15) break;
-            }
+          Vec<3> res = newton (pt.xbar, u);
           if (!(L2Norm (res) <= 1e-11 * scale && overshoot (u) <= gap))
             {
               // D14 absorption (as in 2D): the point of F', extended by the gap (overshoot <= gap),
@@ -833,6 +839,11 @@ void Interface::Rule3D (int side, size_t s, int intorder, Array<IfcPoint> & pts,
                     for (int b = -m; b <= m; b++)
                       test (Vec<2> (u0(0) + step * a / q, u0(1) + step * b / q));
                 }
+              // Newton again from the lattice's best point: the affine guess fails where the image
+              // triangle of F' is degenerate (its vertex images collinear, F' subdivided); an exact
+              // partner found there (up to the gap outside F') is taken instead of the absorption
+              Vec<2> un = u;
+              if (L2Norm (newton (pt.xbar, un)) <= 1e-11 * scale && overshoot (un) <= gap) { u = un; rmin = 0; }
               if (rmin > gap)
                 throw Exception ("pair: unpaired piece of Gamma_h^" + ToString (side + 1) + " (side "
                                  + ToString (side + 1) + ") at " + Pt3 (pt.x) + ": its path ends at " + Pt3 (pt.xbar)

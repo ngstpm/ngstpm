@@ -544,6 +544,58 @@ def test_folded_paths(c):
     assert S.m[:, 0].max() == 1 and S.m[:, 1].max() > 1
 
 
+def sheared_side(h=0.25, d=0.2, r=0.15, w=0.2):
+    """As tilted_side (split at z = -d), with the path end x + g e_n of x a shear along the unit
+    normal e_n (in the plane) of the longest edge AB of the face F nearest (1/2, 1/2): g, a
+    function of the coordinates (xi, eta) along and across AB, vanishes on the lines xi = xi_A,
+    xi_B and moves the third vertex C onto the line AB (Gaussians of widths r, w around C), so
+    that the image triangle T_F is degenerate while the path map stays injective. Returns the
+    side, F's facet number and its vertices."""
+    geo = CSGeometry()
+    b = OrthoBrick(Pnt(0, 0, -0.3), Pnt(1, 1, -d))
+    geo.Add(b.mat("below"))
+    geo.Add((OrthoBrick(Pnt(0, 0, -0.3), Pnt(1, 1, 0.3)) - b).mat("above"))
+    mesh = Mesh(geo.GenerateMesh(maxh=h))
+    D = BitArray([el.mat == "below" for el in mesh.Elements(VOL)])
+    F = BitArray(mesh.nfacet)
+    F.Clear()
+    for f in mesh.facets:
+        els = [e.nr for e in f.elements]
+        F[f.nr] = len(els) == 2 and D[els[0]] != D[els[1]]
+    fd = face_data(mesh, F)
+    fnr = min(fd, key=lambda f: np.linalg.norm(fd[f].mean(0)[:2] - 0.5))
+    P = fd[fnr]
+    k = max(range(3), key=lambda k: np.linalg.norm(P[(k + 1) % 3] - P[(k + 2) % 3]))
+    A, B, C = P[(k + 1) % 3][:2], P[(k + 2) % 3][:2], P[k][:2]
+    t = (B - A) / np.linalg.norm(B - A)
+    n = np.array([-t[1], t[0]])
+    xb, xc, H = (B - A) @ t, (C - A) @ t, (C - A) @ n
+    xi, eta = (x - A[0]) * t[0] + (y - A[1]) * t[1], (x - A[0]) * n[0] + (y - A[1]) * n[1]
+    g = -H * xi * (xi - xb) / (xc * (xc - xb)) * exp(-(xi - xc) ** 2 / r ** 2 - (eta - H) ** 2 / w ** 2)
+    sigma = CF((g * n[0] / d, g * n[1] / d, 1))
+    p = type("P", (), dict(mesh=mesh, elements=D, facets=F, target=CF((x, y, z)) - z * sigma, sigma=sigma))
+    return p, fnr, P
+
+
+def test_degenerate_image_triangle():
+    """The bottom of the slab (identity paths) against sheared_side: the image triangle T_F of
+    its face F is degenerate (area 4e-16 |F|), F is subdivided (m = 8) and its subtriangles'
+    images are not. The partners on F (768 points of side 1 at order 6) were absorbed, missing
+    by up to 3.3e-3 h: the first guess from T_F (its chart determinant 3e-17) is lost; Newton from the lattice's best point
+    finds them exactly (measured |(xbar - x') x sigma'| <= 1.5e-14, x' at most 1.7e-2 h
+    outside F')."""
+    p1 = slab_side(slab_mesh(0.3, 0.33), "slab", 0.3, "bottom")
+    p2, fnr, P = sheared_side()
+    X = np.array([p2.target(p2.mesh(*v)) for v in P])
+    assert tri_area(X) < 1e-14 * tri_area(P)
+    I = pair(p1, p2)
+    S = I.segments()
+    assert S.m[S.facet[:, 1] == fnr, 1].min() > 1
+    R = I._rule(1, 6)
+    assert np.sum(S.facet[R["seg"], 1] == fnr) > 0                # side 1 has partners on F
+    assert_pairing(check(I, p1, p2), sliver=10 * MERGE_TOL, side_tiling=1e-10)
+
+
 def test_carved_pruned_pairs():
     """The folded carve of test_carved_raises (structured, n = 7, box width 3.0) pruned with
     unfitted_domain(..., max_normal_deviation=85): 8 elements of D_h^1 are dropped (none of
