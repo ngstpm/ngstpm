@@ -20,7 +20,7 @@ def time_errors(scheme, dts, T=0.4):
     mesh = MakeStructured2DMesh(quads=False, nx=4, ny=4)
     out = []
     for dt in dts:
-        _, (u, p, sigma, _), sol, p_h, *_, failed = nt.solve("dirichlet", 1, None, dt, T,
+        _, _, (u, p, sigma, _), sol, p_h, *_, failed = nt.solve("dirichlet", 1, None, dt, T,
                                                              scheme=scheme, mesh=mesh, U=LINEAR,
                                                              P=CF(0.0))
         assert not failed
@@ -58,7 +58,21 @@ def test_space_rates_cn(case):
         _, e, ex = nt.row(case, 1, h, h * h, 0.16)[1:]
         assert not ex["failed"] and ex["max_iter"] <= 6
         E.append(e)
-    r = dict(zip(nt.COLUMNS, rates(E)[0]))
+    r = dict(zip(nt.COLUMNS["fitted"], rates(E)[0]))
     for c in ("|s-sh|", "|p-ph|", "|u-uh|"):
         assert r[c] > 1.8, (c, r[c])
     assert r["|u-u**|"] > 2.6, r["|u-u**|"]
+
+
+@pytest.mark.parametrize("case, rate", [("Example 2 (unfitted disk)", 1.6), ("traction", 1.4)])
+def test_unfitted_euler(case, rate):
+    """TPM, k = 1, Euler, dt = h^2, T = 0.04 (1 and 4 steps): sigma, p and u as the steady loop
+    (navier_stokes_stress.py, h = 0.2 -> 0.1: Example 2 2.23, 2.34, 1.94; traction 1.68, 1.54,
+    2.02; here 2.42, 2.69, 1.72 and 1.61, 1.46, 1.78)."""
+    E = []
+    for h in (0.2, 0.1):
+        _, e, ex = nt.row(case, 1, h, h * h, 0.04, scheme="euler")[1:]
+        assert not ex["failed"]
+        E.append(dict(zip(nt.COLUMNS[nt.ns.kind(case)], e)))
+    for c in ("|s-sh|", "|u-uh|", "|p-ph-c|" if "|p-ph-c|" in E[0] else "|p-ph|"):
+        assert log2(E[0][c] / E[1][c]) > rate, (c, log2(E[0][c] / E[1][c]))

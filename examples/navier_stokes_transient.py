@@ -23,37 +23,66 @@ a step that does not converge ends the run as failed.
 Schemes: "euler" (theta = 1) and "cn" (theta = 1/2 after one Euler step, as
 fsi_transient.py and MATLAB's hemodynamics.m), so a^0 is never read.
 
-Case (manufactured): u = U cos t, p = P cos t (U, P of stokes_stress.py), f = rho u_t +
-rho (u . grad) u - div sigma; "dirichlet" on the unit square, "mixed" with traction on
-right|top (U + (1, 1) there, as navier_stokes_stress.py: do-nothing needs outflow, so
-u = (U + (1, 1)) cos t keeps u . n = cos t > 0 for t < pi/2).
+Cases (manufactured): those of navier_stokes_stress.py with u = U cos t, p = P cos t (U, P
+the steady fields of each case), f = rho u_t + rho (u . grad) u - div sigma. Fitted:
+"dirichlet" and "mixed" (traction on right|top, U = U + (1, 1), u . n = cos t > 0 there).
+Unfitted (Transfer Path Method, oseen_stress_tpm.py): Dirichlet on Gamma, Examples 1, 2, 3 of
+elasticity_tpm.py and paper example 4, beta = corrected_beta(u**) as in the steady loop;
+traction on Gamma ("traction", "traction kidney"), u . n_Gamma > 0 kept for t < pi/2 (the sinks
+scale with cos t), beta = u** uncorrected. Stabilisation: navier_stokes_stress.default_stab
+(pointwise S for the traction cases, global otherwise).
 
 Differences from MATLAB: initial velocity u^0 the L2 projection of u(0) on the elements only
 (MATLAB also projects uhat^0, read by nothing in a step); the first beta of step 1 is zero
 (MATLAB: what the caller sets); the stopping norm as in navier_stokes_stress.py.
+
+Observed (scheme, not port): u^0 = Pi u(0) does not satisfy the discrete constraints (div,
+and on Gamma_h the transferred trace), so the first step puts O(h^{k+1}/dt) into a^1; Euler
+damps it, CN carries it undamped in sigma and p. Fitted it is small (dirichlet, k = 1, dt = h^2:
+rates about 2); unfitted it is not (Example 2, k = 1, dt = h^2, T = 0.32, h = 0.2 -> 0.1:
+|s - s_h| 0.30 -> 0.19, Euler 0.33 -> 0.070; exact a^0 instead of the Euler start: 0.28 -> 0.38).
+With u^0 the steady Navier-Stokes velocity at t = 0 (an elliptic projection) CN gives
+0.33 -> 0.071 (rate 2.23, as Euler and the steady loop).
 
 Solver: SciPy SuperLU (superlu.py), as navier_stokes_stress.py.
 """
 import numpy as np
 from ngsolve import *
 
+import navier_stokes_stress as ns
 import oseen_stress as oseen
+import oseen_stress_tpm as otpm
 import stokes_stress as st
+import stokes_stress_tpm as tpm
 import superlu
-from navier_stokes_stress import FITTED, MAXIT, TOL, picard
+from divfree import corrected_beta
+from elasticity_tpm import EXAMPLES, at, domain
+from navier_stokes_stress import MAXIT, TOL, picard
+from ngstpm import restrict, unfitted_domain
+from poisson_tpm import background_mesh
 
 t = Parameter(0.0)                                    # the time of the data
 SCHEMES = ("euler", "cn")
-CASES = list(FITTED)
-SHIFT = {"dirichlet": CF((0, 0)), "mixed": CF((1, 1))}
+CASES = ns.CASES
+COLUMNS = ns.COLUMNS                                  # by ns.kind(case)
+
+
+def steady_fields(case):
+    """U, P of the case (navier_stokes_stress.solve)."""
+    U = (ns.U_MIXED if case == "mixed" else ns.TRACTION[case][1] if case in ns.TRACTION
+         else ns.U_PAPER4 if case == ns.PAPER4 else st.U)
+    return U, ns.P_PAPER4 if case == ns.PAPER4 else st.P
 
 
 def exact(case, mu, rho, U=None, P=None):
     """u = U cos t, p = P cos t, sigma, gamma, f at the Parameter t (default U, P: those of
-    the case)."""
-    U = st.U + SHIFT[case] if U is None else U
-    P = st.P if P is None else P
-    u, p, ut = U * cos(t), P * cos(t), -U * sin(t)
+    the case). u by components (elasticity_tpm.at, as navier_stokes_stress.U_SINK)."""
+    U0, P0 = steady_fields(case)
+    U = U0 if U is None else U
+    P = P0 if P is None else P
+    u = CF((U[0] * cos(t), U[1] * cos(t)))
+    ut = CF((-U[0] * sin(t), -U[1] * sin(t)))
+    p = P * cos(t)
     sigma, gamma, f = st.manufactured(u, p, mu)
     gu = CF((u[0].Diff(x), u[0].Diff(y), u[1].Diff(x), u[1].Diff(y)), dims=(2, 2))
     return u, p, sigma, gamma, f + rho * (ut + gu * u)
@@ -70,25 +99,60 @@ def scaled(beta, rho):
     return rho * beta
 
 
+def setup(case, order, h, mu, stab, fields, mesh=None, factor=None):
+    """mesh, D (None if fitted), phi (None if fitted) and solver(beta, inertia) -> (sol, p_h,
+    m_h, S): one Oseen solve of the case, as navier_stokes_stress.solve."""
+    u, p, sigma, gamma, f = fields
+    if case in ns.FITTED:
+        if mesh is None:
+            from netgen.geom2d import unit_square
+            mesh = Mesh(unit_square.GenerateMesh(maxh=h))
+        bc = ns.FITTED[case].get("dirichlet", ".*")
+        gN = sigma * specialcf.normal(2) if case == "mixed" else None
+        return mesh, None, None, lambda beta, inertia: oseen.solve(
+            mesh, order, mu, f, u, beta, gN, bc, stab, factor, inertia=inertia)
+    assert mesh is None, "unfitted: the mesh is that of the case"
+    if case in ns.TRACTION:
+        phi, mesh = ns.TRACTION[case][0], background_mesh(h)
+        D = unfitted_domain(mesh, phi)[0]
+        args = dict(stab=stab, gN=at(sigma))
+    elif case == ns.PAPER4:
+        phi = ns.PHI_PAPER4
+        mesh, D = ns.paper4_domain(h)
+        args = dict(D=D, dirichlet=".*", stab=stab)
+    else:
+        phi = EXAMPLES[case]
+        mesh, D, bc, _ = domain(case, h, phi)
+        args = dict(D=D, dirichlet=bc, stab=stab)
+    g = u if case in ns.TRACTION else at(u)
+
+    def solver(beta, inertia):
+        sol, p_h, m_h, _, S = otpm.solve(mesh, order, mu, f, g, phi, beta, factor=factor,
+                                         inertia=inertia, **args)
+        return sol, p_h, m_h, S
+    return mesh, D, phi, solver
+
+
 def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", mesh=None, log=None, U=None,
-          P=None):
-    """The run to t = T. Returns mesh, the exact (u, p, sigma, gamma) at T (t is left at T),
-    sol, p_h, m_h, S, u** of the last step, and the Picard counts per step; failed is True if
-    a step did not converge (the run stops there). mesh: given, or the unit square of size h;
-    U, P: as in exact."""
-    if mesh is None:
-        from netgen.geom2d import unit_square
-        mesh = Mesh(unit_square.GenerateMesh(maxh=h))
+          P=None, stab=None):
+    """The run to t = T. Returns mesh, D (None if fitted), the exact (u, p, sigma, gamma) at T
+    (t is left at T), sol, p_h, m_h, S, u** of the last step, and the Picard counts per step;
+    failed is True if a step did not converge (the run stops there). mesh: fitted cases only,
+    default the unit square of size h; U, P: as in exact; stab: default
+    navier_stokes_stress.default_stab(case)."""
     nsteps = round(T / dt)
     assert abs(nsteps * dt - T) < 1e-12 * max(T, 1), "T must be a multiple of dt"
-    u, p, sigma, gamma, f = exact(case, mu, rho, U, P)
-    bc =FITTED[case].get("dirichlet", ".*")
-    gN = sigma * specialcf.normal(2) if case == "mixed" else None
+    stab = ns.default_stab(case) if stab is None else stab
+    fields = exact(case, mu, rho, U, P)
+    u, p, sigma, gamma, _ = fields
     factor = superlu.inverse
+    mesh, D, phi, solver = setup(case, order, h, mu, stab, fields, mesh, factor)
+    correct = D is not None and case not in ns.TRACTION
     V = VectorL2(mesh, order=order)
+    V = V if D is None else restrict(V, D)            # the velocity space of the solves
     un, an = GridFunction(V), GridFunction(V)        # a^0 = 0: not read (Euler first step)
     t.Set(0.0)
-    un.Set(u)
+    un.Set(u, definedonelements=D)
     beta, iters, failed = CF((0, 0)), [], False
     for n in range(nsteps):
         theta = 1.0 if scheme == "euler" or n == 0 else 0.5
@@ -97,9 +161,9 @@ def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", mesh=None, log=No
         w = c * un + (rho * (1 - theta) / theta) * an
 
         def step(b):
-            return oseen.solve(mesh, order, mu, f, u, scaled(b, rho), gN, bc, "global", factor,
-                               inertia=(c, w))
-        sol, p_h, m_h, S, us, _, it, inc = picard(step, mesh, order, mu, beta=beta, factor=factor)
+            return solver(scaled(b, rho), (c, w))
+        sol, p_h, m_h, S, us, _, it, inc = picard(step, mesh, order, mu, D, correct, beta,
+                                                  factor=factor)
         iters.append(it)
         if log is not None:
             log(n + 1, it, inc)
@@ -112,47 +176,59 @@ def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", mesh=None, log=No
         a_old.data = an.vec
         an.vec.data = (1 / (theta * dt)) * (u1 - un.vec) - ((1 - theta) / theta) * a_old
         un.vec.data = u1
-        beta = us
-    return mesh, (u, p, sigma, gamma), sol, p_h, m_h, S, us, iters, failed
+        beta = corrected_beta(mesh, us, m_h, D) if correct else us
+    return mesh, D, (u, p, sigma, gamma), sol, p_h, m_h, S, us, iters, failed
 
 
-COLUMNS = st.COLUMNS + ("|u-u**|",)
-
-
-def row(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", verbose=False):
-    """Errors at T (COLUMNS) and the extras of one run."""
+def row(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", stab=None, verbose=False):
+    """Errors at T (COLUMNS[ns.kind(case)]) and the extras of one run."""
     log = (lambda n, it, inc: print(f"    step {n:4d}  Picard {it:2d}  increment {inc:9.2e}",
                                     flush=True)) if verbose else None
-    mesh, (u, p, sigma, gamma), sol, p_h, m_h, S, us, iters, failed = solve(
-        case, order, h, dt, T, mu, rho, scheme, log=log)
-    e = st.errors(mesh, sol, p_h, u, p, sigma, gamma)
-    eus = sqrt(Integrate(InnerProduct(u - us, u - us) * dx(bonus_intorder=4), mesh))
-    return mesh, sol, (*e, eus), dict(m_h=m_h, S=S, max_iter=max(iters),
+    mesh, D, (u, p, sigma, gamma), sol, p_h, m_h, S, us, iters, failed = solve(
+        case, order, h, dt, T, mu, rho, scheme, log=log, stab=stab)
+    c = None
+    if D is None:
+        e = st.errors(mesh, sol, p_h, u, p, sigma, gamma)
+    elif case in ns.TRACTION:
+        e = st.errors(mesh, sol, p_h, u, p, sigma, gamma, D)[:6]
+        c = -tpm.mean_difference(mesh, p, p_h, D)
+    else:
+        e, c = tpm.table_errors(mesh, sol, p_h, u, p, sigma, gamma, D)
+    eus = sqrt(Integrate(InnerProduct(u - us, u - us) * dx(definedonelements=D, bonus_intorder=4),
+                         mesh))
+    return mesh, sol, (*e, eus), dict(m_h=m_h, c=c, S=S, max_iter=max(iters),
                                       mean_iter=float(np.mean(iters)), steps=len(iters),
-                                      failed=failed)
+                                      nD=None if D is None else D.NumSet(), failed=failed)
 
 
-def study(case, order, hs, dts, T, mu=1.0, rho=1.0, scheme="cn", record=None):
+def fmt(v, spec, width):
+    return f"{'-':>{width}}" if v is None else f"{v:{width}{spec}}"
+
+
+def study(case, order, hs, dts, T, mu=1.0, rho=1.0, scheme="cn", stab=None, record=None):
     """EOC table over the pairs (h, dt): rates in h, or in dt when h is fixed."""
+    stab = ns.default_stab(case) if stab is None else stab
     var = "dt" if len(set(hs)) == 1 else "h"
     title = (f"{case}, k = {order}, mu = {mu}, rho = {rho}, {scheme}"
-             f"{' (Euler start)' if scheme == 'cn' else ''}, T = {T}, Picard tol {TOL:g}, "
-             f"cap {MAXIT}, rates in {var}")
+             f"{' (Euler start)' if scheme == 'cn' else ''}, T = {T}, {ns.STAB[stab]}, "
+             f"Picard tol {TOL:g}, cap {MAXIT}, rates in {var}")
     print(title, flush=True)
-    print(f"  {'h':>7}  {'dt':>9}" + "".join(f"  {c:>9}  eoc " for c in COLUMNS)
-          + f"  {'m_h':>9}  {'S':>8}  {'max it':>6}  {'mean it':>7}  {'steps':>5}")
+    print(f"  {'h':>7}  {'dt':>9}" + "".join(f"  {c:>9}  eoc " for c in COLUMNS[ns.kind(case)])
+          + f"  {'m_h':>9}  {'c':>9}  {'S':>8}  {'max it':>6}  {'mean it':>7}  {'steps':>5}"
+          f"  {'#D_h':>5}")
     prev = None
     for h, dt in zip(hs, dts):
-        mesh, sol, e, ex = row(case, order, h, dt, T, mu, rho, scheme)
+        mesh, sol, e, ex = row(case, order, h, dt, T, mu, rho, scheme, stab)
         s = h if var == "h" else dt
         line = f"  {h:7.4f}  {dt:9.3e}"
         for i, ei in enumerate(e):
             r = (f"{np.log(prev[1][i] / ei) / np.log(prev[0] / s):4.2f}"
                  if prev and ei > 0 and not ex["failed"] else "  - ")
             line += f"  {ei:9.3e}  {r}"
-        m = "-" if ex["m_h"] is None else f"{ex['m_h']:.2e}"
-        print(line + f"  {m:>9}  {ex['S']:8.4f}  {ex['max_iter']:6d}  {ex['mean_iter']:7.2f}"
-              f"  {ex['steps']:5d}" + ("  FAILED" if ex["failed"] else ""), flush=True)
+        print(line + f"  {fmt(ex['m_h'], '.2e', 9)}  {fmt(ex['c'], '.2e', 9)}"
+              f"  {fmt(ex['S'], '.4f', 8)}  {ex['max_iter']:6d}  {ex['mean_iter']:7.2f}"
+              f"  {ex['steps']:5d}  {fmt(ex['nD'], 'd', 5)}" + ("  FAILED" if ex["failed"] else ""),
+              flush=True)
         if record is not None:
             record.add(h, mesh, e, sol[1].gfu, dt=dt, **{k: v for k, v in ex.items()
                                                           if k != "failed"})
@@ -169,6 +245,8 @@ if __name__ == "__main__":
     p.add_argument("--scheme", choices=SCHEMES, default="cn", help="default cn (Euler start)")
     p.add_argument("--mu", type=float, default=1.0, help="viscosity (default 1)")
     p.add_argument("--rho", type=float, default=1.0, help="density (default 1)")
+    p.add_argument("--stab", choices=("global", "pointwise"), default=None,
+                   help="default: navier_stokes_stress.default_stab(case)")
     a = parse(p)
     if a.k is None:
         p.error("--k and --h are required")
@@ -176,9 +254,10 @@ if __name__ == "__main__":
     hs = a.h * len(dts) if len(a.h) == 1 else a.h
     if len(hs) != len(dts):
         p.error("--h and --dt: equal lengths, or one of them a single value")
-    record = Record(COLUMNS)
-    study(a.case, a.k, hs, dts, a.T, a.mu, a.rho, a.scheme, record)
+    stab = ns.default_stab(a.case) if a.stab is None else a.stab
+    record = Record(COLUMNS[ns.kind(a.case)])
+    study(a.case, a.k, hs, dts, a.T, a.mu, a.rho, a.scheme, stab, record)
     if a.out:
         save(a.out, record, dict(driver="navier_stokes_transient", case=a.case, k=a.k, mu=a.mu,
-                                 rho=a.rho, scheme=a.scheme, T=a.T, tol=TOL, maxit=MAXIT,
-                                 beta="u**", solver="superlu", u="U cos t"))
+                                 rho=a.rho, scheme=a.scheme, T=a.T, stab=stab, tol=TOL,
+                                 maxit=MAXIT, beta="u**", solver="superlu", u="U cos t"))
