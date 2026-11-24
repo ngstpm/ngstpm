@@ -32,17 +32,20 @@ traction on Gamma ("traction", "traction kidney"), u . n_Gamma > 0 kept for t < 
 scale with cos t), beta = u** uncorrected. Stabilisation: navier_stokes_stress.default_stab
 (pointwise S for the traction cases, global otherwise).
 
-Differences from MATLAB: initial velocity u^0 the L2 projection of u(0) on the elements only
-(MATLAB also projects uhat^0, read by nothing in a step); the first beta of step 1 is zero
-(MATLAB: what the caller sets); the stopping norm as in navier_stokes_stress.py.
+Initial velocity (start): "elliptic" (default), u^0 = u_h of the Stokes solve of the case at
+t = 0 with the data of (u, p)(0) (beta = 0, f = -div sigma(0), the boundary data at t = 0);
+"l2", MATLAB's L2 projection of u(0) on the elements (initial_state.m:50-51). The L2
+projection does not satisfy the discrete constraints (div, and on Gamma_h the transferred
+trace), so the first step puts O(h^{k+1}/dt) into a^1; Euler damps it, CN carries it undamped
+in sigma and p. Fitted it is small (dirichlet, k = 1, dt = h^2: rates about 2); unfitted it is
+not (Example 2, k = 1, dt = h^2, T = 0.32, h = 0.2 -> 0.1: |s - s_h| 0.30 -> 0.19, Euler
+0.33 -> 0.070; the exact a^0 instead of the Euler start: 0.28 -> 0.38; h = 0.2, dt = 0.0025,
+T = 0.08: 2.07). The Stokes projection is discretely consistent: 0.33 -> 0.070 (rate 2.24) and
+0.369 (Euler 0.347).
 
-Observed (scheme, not port): u^0 = Pi u(0) does not satisfy the discrete constraints (div,
-and on Gamma_h the transferred trace), so the first step puts O(h^{k+1}/dt) into a^1; Euler
-damps it, CN carries it undamped in sigma and p. Fitted it is small (dirichlet, k = 1, dt = h^2:
-rates about 2); unfitted it is not (Example 2, k = 1, dt = h^2, T = 0.32, h = 0.2 -> 0.1:
-|s - s_h| 0.30 -> 0.19, Euler 0.33 -> 0.070; exact a^0 instead of the Euler start: 0.28 -> 0.38).
-With u^0 the steady Navier-Stokes velocity at t = 0 (an elliptic projection) CN gives
-0.33 -> 0.071 (rate 2.23, as Euler and the steady loop).
+Differences from MATLAB: the default start (above; MATLAB also projects uhat^0, read by nothing
+in a step); the first beta of step 1 is zero (MATLAB: what the caller sets); the stopping norm
+as in navier_stokes_stress.py.
 
 Solver: SciPy SuperLU (superlu.py), as navier_stokes_stress.py.
 """
@@ -100,8 +103,9 @@ def scaled(beta, rho):
 
 
 def setup(case, order, h, mu, stab, fields, mesh=None, factor=None):
-    """mesh, D (None if fitted), phi (None if fitted) and solver(beta, inertia) -> (sol, p_h,
-    m_h, S): one Oseen solve of the case, as navier_stokes_stress.solve."""
+    """mesh, D (None if fitted), phi (None if fitted) and solver(beta, inertia, f) -> (sol,
+    p_h, m_h, S): one Oseen solve of the case, as navier_stokes_stress.solve (f: default the
+    source of fields)."""
     u, p, sigma, gamma, f = fields
     if case in ns.FITTED:
         if mesh is None:
@@ -109,7 +113,7 @@ def setup(case, order, h, mu, stab, fields, mesh=None, factor=None):
             mesh = Mesh(unit_square.GenerateMesh(maxh=h))
         bc = ns.FITTED[case].get("dirichlet", ".*")
         gN = sigma * specialcf.normal(2) if case == "mixed" else None
-        return mesh, None, None, lambda beta, inertia: oseen.solve(
+        return mesh, None, None, lambda beta, inertia, f=f: oseen.solve(
             mesh, order, mu, f, u, beta, gN, bc, stab, factor, inertia=inertia)
     assert mesh is None, "unfitted: the mesh is that of the case"
     if case in ns.TRACTION:
@@ -126,7 +130,7 @@ def setup(case, order, h, mu, stab, fields, mesh=None, factor=None):
         args = dict(D=D, dirichlet=bc, stab=stab)
     g = u if case in ns.TRACTION else at(u)
 
-    def solver(beta, inertia):
+    def solver(beta, inertia, f=f):
         sol, p_h, m_h, _, S = otpm.solve(mesh, order, mu, f, g, phi, beta, factor=factor,
                                          inertia=inertia, **args)
         return sol, p_h, m_h, S
@@ -134,12 +138,13 @@ def setup(case, order, h, mu, stab, fields, mesh=None, factor=None):
 
 
 def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", mesh=None, log=None, U=None,
-          P=None, stab=None):
+          P=None, stab=None, start="elliptic"):
     """The run to t = T. Returns mesh, D (None if fitted), the exact (u, p, sigma, gamma) at T
     (t is left at T), sol, p_h, m_h, S, u** of the last step, and the Picard counts per step;
     failed is True if a step did not converge (the run stops there). mesh: fitted cases only,
     default the unit square of size h; U, P: as in exact; stab: default
-    navier_stokes_stress.default_stab(case)."""
+    navier_stokes_stress.default_stab(case); start: the initial velocity, "elliptic" (the
+    Stokes projection of u(0)) or "l2" (MATLAB's L2 projection)."""
     nsteps = round(T / dt)
     assert abs(nsteps * dt - T) < 1e-12 * max(T, 1), "T must be a multiple of dt"
     stab = ns.default_stab(case) if stab is None else stab
@@ -153,6 +158,8 @@ def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", mesh=None, log=No
     un, an = GridFunction(V), GridFunction(V)        # a^0 = 0: not read (Euler first step)
     t.Set(0.0)
     un.Set(u, definedonelements=D)
+    if start == "elliptic":        # the Stokes solve with the data of (u, p)(0): beta = 0, f = -div sigma(0)
+        un.vec.data = solver(CF((0, 0)), None, st.manufactured(u, p, mu)[2])[0][1].vec
     beta, iters, failed = CF((0, 0)), [], False
     for n in range(nsteps):
         theta = 1.0 if scheme == "euler" or n == 0 else 0.5
@@ -180,12 +187,13 @@ def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", mesh=None, log=No
     return mesh, D, (u, p, sigma, gamma), sol, p_h, m_h, S, us, iters, failed
 
 
-def row(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", stab=None, verbose=False):
+def row(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", stab=None, verbose=False,
+        start="elliptic"):
     """Errors at T (COLUMNS[ns.kind(case)]) and the extras of one run."""
     log = (lambda n, it, inc: print(f"    step {n:4d}  Picard {it:2d}  increment {inc:9.2e}",
                                     flush=True)) if verbose else None
     mesh, D, (u, p, sigma, gamma), sol, p_h, m_h, S, us, iters, failed = solve(
-        case, order, h, dt, T, mu, rho, scheme, log=log, stab=stab)
+        case, order, h, dt, T, mu, rho, scheme, log=log, stab=stab, start=start)
     c = None
     if D is None:
         e = st.errors(mesh, sol, p_h, u, p, sigma, gamma)
@@ -205,12 +213,13 @@ def fmt(v, spec, width):
     return f"{'-':>{width}}" if v is None else f"{v:{width}{spec}}"
 
 
-def study(case, order, hs, dts, T, mu=1.0, rho=1.0, scheme="cn", stab=None, record=None):
+def study(case, order, hs, dts, T, mu=1.0, rho=1.0, scheme="cn", stab=None, record=None,
+          start="elliptic"):
     """EOC table over the pairs (h, dt): rates in h, or in dt when h is fixed."""
     stab = ns.default_stab(case) if stab is None else stab
     var = "dt" if len(set(hs)) == 1 else "h"
     title = (f"{case}, k = {order}, mu = {mu}, rho = {rho}, {scheme}"
-             f"{' (Euler start)' if scheme == 'cn' else ''}, T = {T}, {ns.STAB[stab]}, "
+             f"{' (Euler start)' if scheme == 'cn' else ''}, u^0 {start}, T = {T}, {ns.STAB[stab]}, "
              f"Picard tol {TOL:g}, cap {MAXIT}, rates in {var}")
     print(title, flush=True)
     print(f"  {'h':>7}  {'dt':>9}" + "".join(f"  {c:>9}  eoc " for c in COLUMNS[ns.kind(case)])
@@ -218,7 +227,7 @@ def study(case, order, hs, dts, T, mu=1.0, rho=1.0, scheme="cn", stab=None, reco
           f"  {'#D_h':>5}")
     prev = None
     for h, dt in zip(hs, dts):
-        mesh, sol, e, ex = row(case, order, h, dt, T, mu, rho, scheme, stab)
+        mesh, sol, e, ex = row(case, order, h, dt, T, mu, rho, scheme, stab, start=start)
         s = h if var == "h" else dt
         line = f"  {h:7.4f}  {dt:9.3e}"
         for i, ei in enumerate(e):
@@ -245,6 +254,8 @@ if __name__ == "__main__":
     p.add_argument("--scheme", choices=SCHEMES, default="cn", help="default cn (Euler start)")
     p.add_argument("--mu", type=float, default=1.0, help="viscosity (default 1)")
     p.add_argument("--rho", type=float, default=1.0, help="density (default 1)")
+    p.add_argument("--start", choices=("elliptic", "l2"), default="elliptic",
+                   help="initial velocity: Stokes projection (default) or L2 projection (MATLAB)")
     p.add_argument("--stab", choices=("global", "pointwise"), default=None,
                    help="default: navier_stokes_stress.default_stab(case)")
     a = parse(p)
@@ -256,8 +267,8 @@ if __name__ == "__main__":
         p.error("--h and --dt: equal lengths, or one of them a single value")
     stab = ns.default_stab(a.case) if a.stab is None else a.stab
     record = Record(COLUMNS[ns.kind(a.case)])
-    study(a.case, a.k, hs, dts, a.T, a.mu, a.rho, a.scheme, stab, record)
+    study(a.case, a.k, hs, dts, a.T, a.mu, a.rho, a.scheme, stab, record, a.start)
     if a.out:
         save(a.out, record, dict(driver="navier_stokes_transient", case=a.case, k=a.k, mu=a.mu,
-                                 rho=a.rho, scheme=a.scheme, T=a.T, stab=stab, tol=TOL,
+                                 rho=a.rho, scheme=a.scheme, start=a.start, T=a.T, stab=stab, tol=TOL,
                                  maxit=MAXIT, beta="u**", solver="superlu", u="U cos t"))

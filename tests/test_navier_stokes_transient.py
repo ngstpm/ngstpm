@@ -76,3 +76,14 @@ def test_unfitted_euler(case, rate):
         E.append(dict(zip(nt.COLUMNS[nt.ns.kind(case)], e)))
     for c in ("|s-sh|", "|u-uh|", "|p-ph-c|" if "|p-ph-c|" in E[0] else "|p-ph|"):
         assert log2(E[0][c] / E[1][c]) > rate, (c, log2(E[0][c] / E[1][c]))
+
+
+def test_unfitted_cn_elliptic_start():
+    """TPM, CN, small dt on a coarse mesh (h = 0.2, dt = 0.0025, 32 steps): with the L2
+    projection u^0 the first step kicks a^1 by O(h^2/dt) and CN carries it in sigma
+    (|s - s_h| 2.07); the Stokes projection u^0 is discretely consistent (0.369, Euler 0.347)."""
+    case, args = "Example 2 (unfitted disk)", (1, 0.2, 0.0025, 0.08)
+    es = {(s, st): nt.row(case, *args, scheme=s, start=st)[2][0]
+          for s, st in (("cn", "elliptic"), ("cn", "l2"), ("euler", "elliptic"))}
+    assert es["cn", "elliptic"] < 1.2 * es["euler", "elliptic"], es
+    assert es["cn", "l2"] > 3 * es["cn", "elliptic"], es
