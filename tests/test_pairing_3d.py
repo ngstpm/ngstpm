@@ -21,19 +21,23 @@ sides' mean edge lengths of Gamma_h), measured on the configurations below
   h) covered at most 1e-3 h^2 per face on the cylinder (measured with the
   charts in the planes of the image triangles; not re-measured).
 Subdivision (m_F^2 subtriangles per face, the path map resolved to 0.2 GAP_TOL h
-across the paths): all the configurations above have m = 1 on every face, and
-their segments and rules are bitwise those without subdivision. Carved sides of
+across the paths): the two-mesh, fitted, open-surface and absorption cases have
+m = 1 on every face (asserted), and on the sphere (0.5, 0.35), the cylinder
+(0.2, 0.3) and the fitted one-mesh case the segments and rules are bitwise those
+without subdivision (order 6; measured, pair 0.91 s on that sphere before and
+after). Carved sides of
 one background mesh (unit sphere, box half-width about 1.5; measured, the larger
 ones not in the suite): structured n = 6, 8, 12 and netgen maxh 0.3 (h = 0.62,
 0.47, 0.31, 0.42) pair, m from 1 to 8 (mostly 2, 4), x' at most 4.6e-3, 1.0e-2,
 1.4e-2 and 5.0e-2 h outside F' (netgen 0.3: 187 of 2.6e5 points absorbed, miss
-up to 6.7e-3 h, at faces nearly parallel to their paths, n_F . sigma = 0.009),
-per face up to 6.9e-10 of the area dropped in slivers (each below MERGE_TOL h^2:
-corner overlaps of subtriangles), per side 6e-13 - 4.4e-11; pair 15 - 21 s (the
-order-12 check of the rules on 37 - 57 thousand triangles). Structured n = 10,
-16, 20 contain a face in the plane z = 0 through the centre (parallel to its
-paths: no chart; they fold too, n_F . sigma down to -0.03), netgen 0.2 folds (faces with n_F . sigma < 0: 1 on side 1, 3
-on side 2), netgen 0.4, 0.15 are not surfaces (an edge in 4 faces): pair raises.
+up to 6.5e-3 h, partners on faces nearly parallel to their paths, n_F . sigma =
+0.009), per face up to 6.9e-10 of the area dropped in slivers (each below
+MERGE_TOL h^2: corner overlaps of subtriangles), per side 6e-13 - 4.4e-11; pair
+15 - 21 s (the order-12 check of the rules on 37 - 57 thousand triangles).
+Structured n = 10, 16, 20 contain a face in the plane z = 0 through the centre
+(parallel to its paths: no chart; they fold too, n_F . sigma down to -0.03),
+netgen 0.2 folds (faces with n_F . sigma < 0: 1 on side 1, 3 on side 2), netgen
+0.4, 0.15 are not surfaces (an edge in 4 faces): pair raises.
 """
 
 from functools import lru_cache
