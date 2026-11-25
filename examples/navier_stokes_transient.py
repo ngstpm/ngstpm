@@ -71,15 +71,20 @@ at dt = 0.0005 (backward Euler damps a real eigenvalue lambda > 0 only when dt l
   stable but paper example 4, k = 2, mu = 1 (about 1.6 per step, lambda about 750).
 CN amplifies every eigenvalue of positive real part at any dt; bdf2 (one Euler step, then
 (3 u^{n+1} - 4 u^n + u^{n-1})/(2 dt), second order: rates 1.85-2.5 on the pure time error
-above) is stable outside a bounded region of real part in (0, 4/dt). Hence the defaults there:
-P_k part and bdf2 (default_full, default_scheme). The tables of dt = h^2, T = 0.2, h = 0.2 ->
-0.1 then run in all twelve configurations (k = 1, 2, mu = 1, 0.1) but one: paper example 4,
-k = 2, mu = 0.1 (h = 0.1 and 0.05; Picard at its cap after about 8 steps, with Picard
-converged before: a growth of about 6.5 per step at dt = 0.01, absent from the Stokes
-problem, so it comes with the convection). Pruning D_h (--prune, elasticity_tpm.prune)
-removes it there (h = 0.2 -> 0.1 -> 0.05: |s - s_h - cI| 1.8e-4 -> 1.9e-5 -> 2.2e-6, rates
-3.26, 3.12), so it is the default there (default_prune), but it is not a remedy in general: pruned, the kidney at h = 0.2 has paths that miss Gamma (transfer_paths
-raises), and Example 2, k = 2, mu = 1 (whole stress, cn) fails at h = 0.1.
+above) is stable outside a bounded region of real part in (0, 4/dt). With the P_k part and
+bdf2 on the unpruned D_h (dt = h^2, T = 0.2) two configurations still fail: paper example 4,
+k = 2, mu = 0.1 at h = 0.1 and 0.05 (Picard converged, then a growth of about 6.5 per step at
+dt = 0.01, absent from the Stokes problem: it comes with the convection), and the kidney at
+h = 0.05 (k = 1: |s - s_h - cI| 2.1e+3 at mu = 1, 0.44 at mu = 0.1). Pruning D_h
+(elasticity_tpm.prune: infeasible faces, teeth) removes both. With the P_k part, bdf2 and
+pruning (the defaults there: default_full, default_scheme, default_prune), all of Examples
+2, 3 and paper example 4 run: k = 1, 2, mu = 1, 0.1 at h = 0.1, and k = 1 at h = 0.05;
+|s - s_h - cI| h = 0.1 -> 0.05, k = 1: Example 2 0.079 -> 0.014 (mu = 1), 0.013 -> 0.0023
+(mu = 0.1); kidney 0.070 -> 0.014, 0.0083 -> 0.0016; paper example 4, k = 2, mu = 0.1:
+1.9e-5 -> 2.2e-6 (h = 0.2: 1.8e-4). Pruning does not hold at h = 0.2 on the kidney (paths
+miss Gamma: transfer_paths raises), so the default tables of these cases start at h = 0.1;
+pruned with the whole stress and cn, Example 2, k = 2, mu = 1 fails at h = 0.1 (the three
+remedies are needed together). Stability here rests on these runs, not on an analysis.
 
 Differences from MATLAB: the default start and the EPS step of "cn" (above; MATLAB also projects
 uhat^0, read by nothing in a step, and solves the acceleration problem for a^0); on the Dirichlet
@@ -151,8 +156,9 @@ def tpm_dirichlet_oh(case):
 
 
 def default_prune(case):
-    """D_h pruned (elasticity_tpm.prune) on paper example 4 only (docstring: stability)."""
-    return case == ns.PAPER4
+    """D_h pruned (elasticity_tpm.prune) on the Dirichlet TPM cases with paths O(h) (docstring:
+    stability)."""
+    return tpm_dirichlet_oh(case)
 
 
 def default_full(case):
@@ -336,10 +342,13 @@ def study(case, order, hs, dts, T, mu=1.0, rho=1.0, scheme=None, stab=None, reco
         prev = (s, e)
 
 
-# the default tables (one process per case, k and mu; dt = h^2, T = 0.2): h down to 0.05 on
-# the fitted meshes and Example 1 (gap O(h^2)), to 0.1 on the cases with gap O(h)
+# the default tables (one process per case, k and mu; dt = h^2, T = 0.2): h = 0.2, 0.1, 0.05 on
+# the fitted meshes and Example 1 (gap O(h^2)); 0.2, 0.1 on the traction cases; 0.1, 0.05 on the
+# Dirichlet TPM cases with paths O(h) (pruned by default; the pruned kidney at h = 0.2 has paths
+# that miss Gamma). k = 2 at h = 0.05: a COSMOS job (about 20 min and 1.1 GB per level).
 DEFAULTS = {**{(k, c): (0.2, 0.1, 0.05) for k in (1, 2) for c in (*ns.FITTED, ns.UNFITTED[0])},
-            **{(k, c): (0.2, 0.1) for k in (1, 2) for c in ns.UNFITTED[1:]}}
+            **{(k, c): (0.1, 0.05) if tpm_dirichlet_oh(c) else (0.2, 0.1)
+               for k in (1, 2) for c in ns.UNFITTED[1:]}}
 
 
 if __name__ == "__main__":
@@ -358,7 +367,7 @@ if __name__ == "__main__":
     p.add_argument("--start", choices=("elliptic", "l2"), default="elliptic",
                    help="initial velocity: steady Navier-Stokes solve at t = 0 (default) or L2 projection (MATLAB)")
     p.add_argument("--prune", action=argparse.BooleanOptionalAction, default=None,
-                   help="prune D_h (Dirichlet TPM cases; default: on paper example 4 only)")
+                   help="prune D_h (Dirichlet TPM cases; default: on those with paths O(h))")
     p.add_argument("--transfer", choices=("full", "pk"), default=None,
                    help="stress transferred on Gamma_h (Dirichlet TPM): whole, or P_k part "
                         "(default: pk on the cases with paths O(h), full otherwise)")

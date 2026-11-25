@@ -80,7 +80,7 @@ def test_unfitted_euler(case, rate):
     2.02; here 2.42, 2.69, 1.72 and 1.61, 1.46, 1.78)."""
     E = []
     for h in (0.2, 0.1):
-        _, e, ex = nt.row(case, 1, h, h * h, 0.04, scheme="euler")[1:]
+        _, e, ex = nt.row(case, 1, h, h * h, 0.04, scheme="euler", prune=False)[1:]
         assert not ex["failed"]
         E.append(dict(zip(nt.COLUMNS[nt.ns.kind(case)], e)))
     for c in ("|s-sh|", "|u-uh|", "|p-ph-c|" if "|p-ph-c|" in E[0] else "|p-ph|"):
@@ -93,7 +93,7 @@ def test_unfitted_cn_elliptic_start():
     projection has one (|s - s_h| 2.2e+3), the steady Navier-Stokes solve at t = 0 does not
     (0.347, Euler 0.347)."""
     case, args = "Example 2 (unfitted disk)", (1, 0.2, 0.0025, 0.08)
-    es = {(s, st): nt.row(case, *args, scheme=s, start=st)[2][0]
+    es = {(s, st): nt.row(case, *args, scheme=s, start=st, prune=False)[2][0]
           for s, st in (("cn", "elliptic"), ("cn", "l2"), ("euler", "elliptic"))}
     assert es["cn", "elliptic"] < 1.2 * es["euler", "elliptic"], es
     assert es["cn", "l2"] > 3 * es["cn", "elliptic"], es
