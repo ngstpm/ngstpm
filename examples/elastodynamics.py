@@ -26,19 +26,20 @@ Port of the MATLAB solid (LinearElasticityProblem, time_scheme "newmark"):
   two rows.
 Difference from MATLAB: tau_S = tau mu, as in elasticity.py (tau = 1/mu gives MATLAB's 1).
 
-Options for unfitted meshes (both forms keep polynomial solutions exact):
-- transfer="grad": the paths integrate the gradient of the displacement (velocity), degree
-  k - 1, instead of A sigma + S(gamma) (A sigma' + S(omega)); the transfer error stays
-  O(|ell| h^k).
-- damping (Elastodynamics only, default 0 as in MATLAB): the consistent flux term
-  -tau_v (eta' - etahat'), tau_v = damping sqrt(rho mu), eta' by Newmark; it vanishes on
-  the exact solution.
-With the Gamma_h of the TPM at distance O(h) (immersed examples), the space operator of the
-transfer path rows has growing modes, which the undamped Newmark march does not control
-(blow-up observed for k >= 2 on the disk and the kidney of elasticity_tpm.py). Observed
-stable (zero data, random start, growth rate <= ~0 up to T = 2; smooth data to T = 10): prune
-D_h (elasticity_tpm.prune), transfer="grad", and damping=1 for Elastodynamics. On fitted
-meshes and at distance O(h^2) (Example 1) no growth was observed with the defaults.
+The TPM rows are those of the preprints: the paths integrate q_h = A sigma_h + gamma_h
+(A sigma_h' + omega_h in the velocity form). On fitted meshes and with Gamma_h at distance
+O(h^2) (Example 1) no growth was observed. With Gamma_h at distance O(h) (the immersed
+examples of elasticity_tpm.py), the march grows. Modifications that remove the growth are
+suggestions in elastodynamics_with_damping.py.
+INSTABILITY: growth rate per unit time of the zero-data march from a random eta (v), dt = 0.01,
+T = 1 (log of the norm of the state over the second half), N Newmark / V velocity form:
+
+                        pruned D_h (MATLAB split.m)        unpruned
+                        k=1        k=2        k=3          k=1        k=2        k=3
+    disk   h = 0.1   N 0.4 V 0  N 0.4 V 0  N 1.3 V 0.1   N 0.3 V 0  N 1.1 V 0   N 3.5 V 0.1
+    disk   h = 0.05  N 1.4 V 0  N 0.5 V 0  N 5.7 V 0.5   N 1.0 V 0  N 4.5 V 0   N 23  V 35
+    kidney h = 0.1   N 166 V 2  N 21 V 17  N 211 V 305   N 0.9 V 0  N 246 V 84  N 132 V 39
+    kidney h = 0.05  N 4.7 V 0  N 12 V 1.4 N 51  V 53    N inf V 276 N 175 V 80 N 153 V 135
 
 VelocityStress: the stress-velocity-rotation form (no MATLAB counterpart), unknowns sigma,
 v = eta', omega = gamma', vhat in the spaces of elasticity.py,
@@ -79,10 +80,9 @@ class Elastodynamics:
     t); phi: the level set of Omega (TPM) or None (fitted); D: the elements of D_h (TPM;
     default unfitted_domain); dirichlet: the fitted Dirichlet boundary of the mesh."""
 
-    def __init__(self, mesh, order, mat, f, g, dt, phi=None, D=None, dirichlet=".*", tau=1.0, full=True,
-                 damping=0.0, transfer="stress"):
+    def __init__(self, mesh, order, mat, f, g, dt, phi=None, D=None, dirichlet=".*", tau=1.0, full=True):
         self.mesh, self.order, self.mat, self.f, self.g, self.dt = mesh, order, mat, f, g, dt
-        self.phi, self.dirichlet, self.tau, self.full, self.transfer = phi, dirichlet, tau, full, transfer
+        self.phi, self.dirichlet, self.tau, self.full = phi, dirichlet, tau, full
         if phi is not None:
             D = unfitted_domain(mesh, phi)[0] if D is None else D
             self.paths = transfer_paths(mesh, phi, D, order=order + 4)
@@ -93,13 +93,6 @@ class Elastodynamics:
         lam, mu, rho, b0 = (mat[k] for k in ("lam", "mu", "rho", "b0"))
 
         self.lhs = self.bilinear(True, rho / (BETA * dt ** 2) + b0)
-        self.damping = damping
-        if damping:                         # tau_v (eta' - etahat') in the flux, eta' by Newmark
-            tau_v = damping * (rho * mu) ** 0.5
-            self.jump(self.lhs, tau_v * GAMMA / (BETA * dt))
-            self.Dmp = BilinearForm(self.fes)
-            self.jump(self.Dmp, tau_v)
-            self.Dmp.Assemble()
         self.load = self.linear(f, g)
         self.M = BilinearForm(self.fes)
         self.M += rho * self.trial[3] * self.test[3] * self.dV
@@ -127,20 +120,10 @@ class Elastodynamics:
         else:
             lhs += sigmahat_n * muh * interior_ds(mesh, D)
             sigma = stress(sP, w1, w2) if self.full else sP
-            G = grad(eta) if self.transfer == "grad" else compliance(sigma, lam, mu) + skew(gam)
-            lhs += etahat.Transfer(self.paths, gradient=G) * muh * self._dB()
+            lhs += etahat.Transfer(self.paths, gradient=compliance(sigma, lam, mu) + skew(gam)) * muh * self._dB()
         if mass:
             lhs += mass * eta * self.test[3] * self.dV
         return lhs
-
-    def jump(self, form, c):
-        """The rows of a flux term -c (eta - etahat) (sigma_hat n gets -c (x - xhat)): the
-        momentum row on all element boundaries, the equation of etahat where it is the
-        conservation row (fitted: all; TPM: the interior faces of D_h)."""
-        (eta, etahat), (w, muh) = (self.trial[3], self.trial[5]), (self.test[3], self.test[5])
-        form += c * (eta - etahat) * w * dx(element_boundary=True, definedonelements=self.D)
-        dC = dx(element_boundary=True) if self.phi is None else interior_ds(self.mesh, self.D)
-        form += -c * (eta - etahat) * muh * dC
 
     def linear(self, f, g):
         """(f, v)_{D_h} and, TPM, <g(xbar), muh>_{Gamma_h}."""
@@ -179,10 +162,6 @@ class Elastodynamics:
         b, tmp = self.load.vec.CreateVector(), self.load.vec.CreateVector()
         tmp.data = (1 / (BETA * dt ** 2)) * self.U + (1 / (BETA * dt)) * self.V + ((0.5 - BETA) / BETA) * self.A
         b.data = self.load.vec + self.M.mat * tmp
-        if self.damping:                    # Newmark eta'^{n+1} = gamma/(beta dt) x - (history)
-            tmp.data = (GAMMA / (BETA * dt)) * self.U + (GAMMA / BETA - 1) * self.V \
-                + (dt * (GAMMA / (2 * BETA) - 1)) * self.A
-            b.data += self.Dmp.mat * tmp
         x = self.U.CreateVector()
         self.solve(self.lhs, self.Ainv, b, self.g, x)
         X, U, V, A = (v.FV().NumPy() for v in (x, self.U, self.V, self.A))
@@ -224,8 +203,6 @@ class Elastodynamics:
         load = self.linear(self.f, self.g).Assemble()
         r = load.vec.CreateVector()
         r.data = load.vec - K.mat * self.U
-        if self.damping:
-            r.data -= self.Dmp.mat * self.V
         gf = GridFunction(self.fes)
         gf.vec.data = self.M.mat.Inverse(self._block(3), inverse="sparsecholesky") * r
         c = gf.components
@@ -313,11 +290,10 @@ class VelocityStress(Elastodynamics):
     vhat) at t^n and the displacement eta^n in the v block of E. Arguments as Elastodynamics
     (g: the displacement on Gamma; the datum is g')."""
 
-    def __init__(self, mesh, order, mat, f, g, dt, phi=None, D=None, dirichlet=".*", tau=1.0, full=True,
-                 transfer="stress"):
+    def __init__(self, mesh, order, mat, f, g, dt, phi=None, D=None, dirichlet=".*", tau=1.0, full=True):
         self.mesh, self.order, self.mat, self.f, self.dt = mesh, order, mat, f, dt
         self.g = g.Diff(t)                                           # the velocity datum
-        self.phi, self.dirichlet, self.tau, self.full, self.transfer = phi, dirichlet, tau, full, transfer
+        self.phi, self.dirichlet, self.tau, self.full = phi, dirichlet, tau, full
         if phi is not None:
             D = unfitted_domain(mesh, phi)[0] if D is None else D
             self.paths = transfer_paths(mesh, phi, D, order=order + 4)
@@ -335,7 +311,7 @@ class VelocityStress(Elastodynamics):
         self.H = BilinearForm(self.fes)                              # the old-state terms
         self.H += (2 / dt) * (InnerProduct(compliance(sigma, lam, mu), stress(*self.test[:3]))
                               + rho * v * self.test[3]) * self.dV
-        if phi is not None and transfer != "grad":
+        if phi is not None:
             s = sigma if full else sP
             self.H += (2 / dt) * compliance(s, lam, mu).PathIntegral(self.paths) * self.test[5] * self._dB()
         self.B0 = BilinearForm(self.fes)
@@ -363,8 +339,7 @@ class VelocityStress(Elastodynamics):
         else:
             lhs += sigmahat_n * muh * interior_ds(mesh, D)
             s = sigma if self.full else sP
-            G = grad(v) if self.transfer == "grad" else cs * compliance(s, lam, mu) + skew(om)
-            lhs += vhat.Transfer(self.paths, gradient=G) * muh * self._dB()
+            lhs += vhat.Transfer(self.paths, gradient=cs * compliance(s, lam, mu) + skew(om)) * muh * self._dB()
         return lhs
 
     def step(self):
@@ -469,11 +444,9 @@ def study(case, order, hs, T=0.5, mat=None, record=None, form="displacement"):
         if case == "fitted":
             mesh, kw = Mesh(unit_square.GenerateMesh(maxh=h)), {}
         else:
-            phi = EXAMPLES[case]                                    # the stable settings, see above
+            phi = EXAMPLES[case]                                    # D_h pruned as in MATLAB split.m
             mesh, D, dirichlet, _ = domain(case, h, phi, prune=True)
-            kw = dict(phi=phi, D=D, dirichlet=dirichlet, transfer="grad")
-            if form == "displacement":
-                kw["damping"] = 1.0
+            kw = dict(phi=phi, D=D, dirichlet=dirichlet)
         r = march(mesh, order, SMOOTH, mat, T / nsteps, nsteps, **kw)
         e = r.errors(SMOOTH)
         print(eoc_line(h, e, prev) + f"  {T / nsteps:6.4f}")
