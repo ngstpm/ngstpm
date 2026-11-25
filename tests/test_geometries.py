@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from netgen.csg import CSGeometry, OrthoBrick, Pnt
-from ngsolve import BND, CF, Integrate, Mesh, Norm, cos, dx, pi, sin, sqrt, x, y
+from ngsolve import BND, CF, ElementId, Integrate, Mesh, Norm, VOL, cos, dx, pi, sin, sqrt, x, y
 
 from ngstpm import (BSplineCurve, ParametricCurve, PointCloud, boundary_ds, pair, snapped_domains,
                     transfer_paths, unfitted_domain)
@@ -95,6 +95,38 @@ def test_same_subdomains_as_level_set(make):
     outside = list(unfitted_domain(mesh, -geo)[0])            # side=2: {phi > 0}, any geometry
     assert sum(outside) > 100
     assert list(unfitted_domain(mesh, geo, side=2)[0]) == outside == list(unfitted_domain(mesh, disk, side=2)[0])
+
+
+@pytest.mark.parametrize("side", [1, 2])
+def test_prune_infeasible_elements(side):
+    """unfitted_domain(..., max_normal_deviation=45) on the disk: a subset of the carved D_h,
+    the same for the level set and the parametrized circle; every facet of the pruned
+    Gamma_h within 2 diameters of Gamma has n_F . nu >= cos 45 (nu = +-x/|x|, checked here
+    independently), and some elements are dropped."""
+    mesh = dirichlet.background_mesh(0.2)
+    D0 = unfitted_domain(mesh, disk, side)[0]
+    D = unfitted_domain(mesh, disk, side, max_normal_deviation=45)[0]
+    assert list(D) == list(unfitted_domain(mesh, ParametricCurve(circle_xy), side, max_normal_deviation=45)[0])
+    assert all(D0[e] for e in range(mesh.ne) if D[e]) and sum(D) < sum(D0)
+    assert list(unfitted_domain(mesh, disk, side, max_normal_deviation=None)[0]) == list(D0)
+    with pytest.raises(ValueError, match=r"\[0, 90\]"):
+        unfitted_domain(mesh, disk, side, max_normal_deviation=95)
+    s = 1 if side == 1 else -1
+    worst = 1.0
+    for f in mesh.facets:
+        els = [e.nr for e in f.elements]
+        if len(els) != 2 or D[els[0]] == D[els[1]]:
+            continue
+        P = np.array([mesh[v].point for v in f.vertices])
+        c = P.mean(0)
+        if abs(np.linalg.norm(c) - 1) > 2 * np.linalg.norm(P[1] - P[0]):
+            continue
+        e = els[0] if D[els[0]] else els[1]
+        ce = np.mean([mesh[v].point for v in mesh[ElementId(VOL, e)].vertices], axis=0)
+        n = np.array([P[1, 1] - P[0, 1], P[0, 0] - P[1, 0]])
+        n = n / np.linalg.norm(n) * np.sign(n @ (c - ce))
+        worst = min(worst, s * n @ c / np.linalg.norm(c))
+    assert worst >= np.cos(np.pi / 4) - 1e-9
 
 
 # -- Dirichlet (one-sided paths) --------------------------------------------------

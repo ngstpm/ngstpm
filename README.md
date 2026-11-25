@@ -139,7 +139,18 @@ run the other way). `I = pair(p1, p2)` is the `Interface`: it subdivides
 `Gamma_h^2`, so every point `x` of `Gamma_h^i` has a partner `x'` on the
 facing `Gamma_h^j` whose own path ends at the same `xbar` (the two paths may
 meet at `xbar` with a kink). It raises if a piece of `Gamma_h^i` has no
-partner (h too large for the geometry, or inconsistent paths).
+partner (h too large for the geometry, or inconsistent paths). In 3D
+(tetrahedra) a segment is a pair of faces and its pieces are polygons, one
+quadrature rule per triangle of a piece. A carved staircase in 3D may fold
+(faces of `Gamma_h` facing back into `D_h`) or not be a surface (four faces
+at an edge), and `pair` raises there;
+`unfitted_domain(mesh, phi, side, max_normal_deviation=85)` drops the
+elements owning faces whose normal deviates from that of `Gamma` by more
+than 85 degrees (after MATLAB's `prune_infeasible_elements`), which removes
+them on the carved spheres of the tests. The interface solve on carved sides
+in 3D is experimental: it pairs and reproduces affine solutions, but does not
+converge on the sphere (`examples/poisson_interface_3d.py`); two meshes with
+their vertices on `Gamma` work.
 
 | | |
 |---|---|
@@ -213,5 +224,7 @@ python examples/poisson_tpm_3d.py       # Dirichlet: ball, torus (a few minutes)
 python examples/poisson_tpm_neumann.py  # Neumann condition on the unfitted boundary
 python examples/poisson_interface.py    # interface problem: fitted, snapped, unfitted
 python examples/poisson_interface_two_meshes.py  # the same on two non-matching meshes
+python examples/poisson_interface_two_meshes_3d.py  # two meshes, unit sphere (a few minutes)
+python examples/poisson_interface_3d.py  # one carved background mesh: EXPERIMENTAL, does not converge
 pytest
 ```

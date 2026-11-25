@@ -53,7 +53,8 @@ from poisson import solve_linear_system
 from ngstpm import interior_ds, pair, restrict, snapped_domains, transfer_paths, unfitted_domain
 
 
-def solve(mesh, order, phi, D1, D2, kappa1, kappa2, f1, f2, gD, gN, g, tau=1.0, kind=None, bonus=None):
+def solve(mesh, order, phi, D1, D2, kappa1, kappa2, f1, f2, gD, gN, g, tau=1.0, kind=None, bonus=None,
+          condense=True):
     p1 = transfer_paths(mesh, phi, D1, kind=kind)                     # side 1: x -> p1.target on Gamma
     p2 = transfer_paths(mesh, phi, D2, kind=kind)                     # side 2
     I = pair(p1, p2)                                                  # common subdivision of Gamma
@@ -66,9 +67,10 @@ def solve(mesh, order, phi, D1, D2, kappa1, kappa2, f1, f2, gD, gN, g, tau=1.0, 
     fes = V1 * W1 * M1 * V2 * W2 * M2
     (q1, u1, uhat1, q2, u2, uhat2), (r1, v1, mu1, r2, v2, mu2) = fes.TnT()
 
-    lhs = BilinearForm(fes, condense=True)
+    lhs = BilinearForm(fes, condense=condense)
     rhs = LinearForm(fes)
     n = specialcf.normal(mesh.dim)
+    X = (x, y, z)[:mesh.dim]
 
     # HDG on each side: plain NGSolve
     for q, u, uhat, r, v, mu, kappa, f, D in ((q1, u1, uhat1, r1, v1, mu1, kappa1, f1, D1),
@@ -76,7 +78,7 @@ def solve(mesh, order, phi, D1, D2, kappa1, kappa2, f1, f2, gD, gN, g, tau=1.0, 
         dV = dx(definedonelements=D)
         dS = dx(element_boundary=True, definedonelements=D)
         qhat_n = q*n + tau*(u - uhat)
-        lhs += 1/kappa(x, y)*q*r*dV - u*div(r)*dV + uhat*(r*n)*dS
+        lhs += 1/kappa(*X)*q*r*dV - u*div(r)*dV + uhat*(r*n)*dS
         lhs += -q*grad(v)*dV + qhat_n*v*dS
         rhs += f*v*dV
         lhs += qhat_n*mu*interior_ds(mesh, D)                         # conservativity: interior faces
@@ -90,8 +92,8 @@ def solve(mesh, order, phi, D1, D2, kappa1, kappa2, f1, f2, gD, gN, g, tau=1.0, 
 
     # Gamma_h^2, trace:  u_1 - u_2 = gD  at xbar
     xbar = p2.target                                                  # side 2's paths end here
-    ub1 = uhat1.Transfer(p1, gradient=-q1/kappa1(x, y))
-    ub2 = uhat2.Transfer(p2, gradient=-q2/kappa2(x, y))
+    ub1 = uhat1.Transfer(p1, gradient=-q1/kappa1(*X))
+    ub2 = uhat2.Transfer(p2, gradient=-q2/kappa2(*X))
     lhs += (ub1 - ub2) * mu2 * dI[1]
     rhs += gD(*xbar) * mu2 * dI[1]
 

@@ -118,7 +118,7 @@ def transfer_paths(mesh, geo, D=None, *, kind=None, order=ORDER, facets=None, to
     grad_d = None if grad_d is None else side(grad_d)
     # on the partner of an interface measure the path ends at the integration point's xbar
     target = SideEval(side(CF((x, y, z)[:mesh.dim])) + ell * sigma, None, mesh, D, path_end=True)
-    nbar = sigma if kind == "closest" else normal(geo, *target)
+    nbar = sigma if kind == "closest" else normal(geo, *target).Compile()   # target once per point, not per use
     return TransferPath(mesh, D, facets, geo, kind, ell, sigma, target, nbar, grad_d, residual)
 
 

@@ -9,7 +9,7 @@ execute_process(COMMAND ${Python_EXECUTABLE} -c "import ngsolve.config as c; pri
                 OUTPUT_VARIABLE NGSolve_DIR OUTPUT_STRIP_TRAILING_WHITESPACE)
 find_package(NGSolve CONFIG REQUIRED)
 
-add_ngsolve_python_module(_ngstpm src/shifted.cpp src/extrapolate.cpp src/interface.cpp src/ifcmeasure.cpp src/ifclinear.cpp)
+add_ngsolve_python_module(_ngstpm src/shifted.cpp src/extrapolate.cpp src/interface.cpp src/interface3d.cpp src/ifcmeasure.cpp src/ifclinear.cpp)
 # Find the NGSolve libraries of the installed ngsolve wheel next to us in
 # site-packages, not in the temporary build environment.
 if(APPLE)
