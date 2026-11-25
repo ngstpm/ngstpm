@@ -59,9 +59,32 @@ steady Navier-Stokes solve shares the operator of the first step up to O(tau): c
 cn-euler 0.347, Euler 0.347; dt = h^2, h = 0.2 -> 0.1: 0.33 -> 0.071 (rate 2.23, as the steady
 loop); traction: rates 1.68, 1.54, 2.02 for sigma, p, u (steady: the same).
 
+Stability on the Dirichlet TPM cases with paths O(h) (Examples 2, 3, paper example 4): the
+steady loop does not see it, but the semi-discrete operator (the step without the mass) can
+have eigenvalues of positive real part, so the error grows from round-off. Measured with Euler
+at dt = 0.0005 (backward Euler damps a real eigenvalue lambda > 0 only when dt lambda > 2):
+- whole stress transferred (bubbles included, Cardenas-Solano (2.2g), MATLAB): paper example 4,
+  k = 1, mu = 1, h = 0.1 grows about 16 times per step (lambda about 2e3); Examples 2, 3 at
+  mu = 0.1 likewise (lambda about 1e3, proportional to mu/h^2). Not the multiplier m (pinned
+  pressure: the same), not tau (0.05 to 20: the same); the traction cases do not grow.
+- P_k part transferred: all of Examples 2, 3 and paper example 4 at k = 1, 2, mu = 1, 0.1 are
+  stable but paper example 4, k = 2, mu = 1 (about 1.6 per step, lambda about 750).
+CN amplifies every eigenvalue of positive real part at any dt; bdf2 (one Euler step, then
+(3 u^{n+1} - 4 u^n + u^{n-1})/(2 dt), second order: rates 1.85-2.5 on the pure time error
+above) is stable outside a bounded region of real part in (0, 4/dt). Hence the defaults there:
+P_k part and bdf2 (default_full, default_scheme). The tables of dt = h^2, T = 0.2, h = 0.2 ->
+0.1 then run in all twelve configurations (k = 1, 2, mu = 1, 0.1) but one: paper example 4,
+k = 2, mu = 0.1 (h = 0.1 and 0.05; Picard at its cap after about 8 steps, with Picard
+converged before: a growth of about 6.5 per step at dt = 0.01, absent from the Stokes
+problem, so it comes with the convection). Pruning D_h (--prune, elasticity_tpm.prune)
+removes it there (h = 0.2 -> 0.1 -> 0.05: |s - s_h - cI| 1.8e-4 -> 1.9e-5 -> 2.2e-6, rates
+3.26, 3.12), so it is the default there (default_prune), but it is not a remedy in general: pruned, the kidney at h = 0.2 has paths that miss Gamma (transfer_paths
+raises), and Example 2, k = 2, mu = 1 (whole stress, cn) fails at h = 0.1.
+
 Differences from MATLAB: the default start and the EPS step of "cn" (above; MATLAB also projects
-uhat^0, read by nothing in a step, and solves the acceleration problem for a^0); the stopping norm
-as in navier_stokes_stress.py.
+uhat^0, read by nothing in a step, and solves the acceleration problem for a^0); on the Dirichlet
+TPM cases with paths O(h), the P_k part of the stress transferred and bdf2 (above; MATLAB: the
+whole stress, the theta-scheme only); the stopping norm as in navier_stokes_stress.py.
 
 Solver: SciPy SuperLU (superlu.py), as navier_stokes_stress.py.
 """
@@ -75,13 +98,13 @@ import stokes_stress as st
 import stokes_stress_tpm as tpm
 import superlu
 from divfree import corrected_beta
-from elasticity_tpm import EXAMPLES, at, domain
+from elasticity_tpm import EXAMPLES, at, domain, prune as prune_domain
 from navier_stokes_stress import MAXIT, TOL, picard
 from ngstpm import restrict, unfitted_domain
 from poisson_tpm import background_mesh
 
 t = Parameter(0.0)                                    # the time of the data
-SCHEMES = ("euler", "cn", "cn-euler")
+SCHEMES = ("euler", "cn", "cn-euler", "bdf2")
 EPS = 1e-3                                            # the first step of "cn", in units of dt
 CASES = ns.CASES
 COLUMNS = ns.COLUMNS                                  # by ns.kind(case)
@@ -122,10 +145,33 @@ def scaled(beta, rho):
     return rho * beta
 
 
-def setup(case, order, h, mu, stab, fields, mesh=None, factor=None):
+def tpm_dirichlet_oh(case):
+    """A Dirichlet TPM case with paths O(h) (Examples 2, 3, paper example 4)."""
+    return ns.kind(case) == "dirichlet" and case != ns.UNFITTED[0]
+
+
+def default_prune(case):
+    """D_h pruned (elasticity_tpm.prune) on paper example 4 only (docstring: stability)."""
+    return case == ns.PAPER4
+
+
+def default_full(case):
+    """The stress transferred on Gamma_h: the whole stress (P_k part and bubbles,
+    Cardenas-Solano 2024 (2.2g)), except on the Dirichlet TPM cases with paths O(h), where its
+    P_k part (docstring: stability)."""
+    return not tpm_dirichlet_oh(case)
+
+
+def default_scheme(case):
+    """bdf2 on the Dirichlet TPM cases with paths O(h), cn otherwise (docstring: stability)."""
+    return "bdf2" if tpm_dirichlet_oh(case) else "cn"
+
+
+def setup(case, order, h, mu, stab, fields, mesh=None, factor=None, prune=False, full=True):
     """mesh, D (None if fitted), phi (None if fitted) and solver(beta, inertia, f) -> (sol,
     p_h, m_h, S): one Oseen solve of the case, as navier_stokes_stress.solve (f: default the
-    source of fields)."""
+    source of fields); prune: D_h pruned (elasticity_tpm.prune); full: the stress transferred
+    on Gamma_h (stokes_stress_tpm.solve); both for the Dirichlet TPM cases only."""
     u, p, sigma, gamma, f = fields
     if case in ns.FITTED:
         if mesh is None:
@@ -143,11 +189,12 @@ def setup(case, order, h, mu, stab, fields, mesh=None, factor=None):
     elif case == ns.PAPER4:
         phi = ns.PHI_PAPER4
         mesh, D = ns.paper4_domain(h)
-        args = dict(D=D, dirichlet=".*", stab=stab)
+        D = prune_domain(mesh, phi, D) if prune else D
+        args = dict(D=D, dirichlet=".*", stab=stab, full=full)
     else:
         phi = EXAMPLES[case]
-        mesh, D, bc, _ = domain(case, h, phi)
-        args = dict(D=D, dirichlet=bc, stab=stab)
+        mesh, D, bc, _ = domain(case, h, phi, prune)
+        args = dict(D=D, dirichlet=bc, stab=stab, full=full)
     g = u if case in ns.TRACTION else at(u)
 
     def solver(beta, inertia, f=f):
@@ -157,25 +204,30 @@ def setup(case, order, h, mu, stab, fields, mesh=None, factor=None):
     return mesh, D, phi, solver
 
 
-def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", mesh=None, log=None, U=None,
-          P=None, stab=None, start="elliptic"):
+def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme=None, mesh=None, log=None, U=None,
+          P=None, stab=None, start="elliptic", prune=None, full=None):
     """The run to t = T. Returns mesh, D (None if fitted), the exact (u, p, sigma, gamma) at T
     (t is left at T), sol, p_h, m_h, S, u** of the last step, and the Picard counts per step;
     failed is True if a step did not converge (the run stops there). mesh: fitted cases only,
     default the unit square of size h; U, P: as in exact; stab: default
     navier_stokes_stress.default_stab(case); start: the initial velocity, "elliptic" (the
-    steady Navier-Stokes solve at t = 0) or "l2" (MATLAB's L2 projection)."""
+    steady Navier-Stokes solve at t = 0) or "l2" (MATLAB's L2 projection); prune, full: as in
+    setup (defaults default_prune(case), default_full(case)); scheme: default
+    default_scheme(case)."""
     nsteps = round(T / dt)
     assert abs(nsteps * dt - T) < 1e-12 * max(T, 1), "T must be a multiple of dt"
     stab = ns.default_stab(case) if stab is None else stab
     fields = exact(case, mu, rho, U, P)
     u, p, sigma, gamma, _ = fields
     factor = superlu.inverse
-    mesh, D, phi, solver = setup(case, order, h, mu, stab, fields, mesh, factor)
+    full = default_full(case) if full is None else full
+    prune = default_prune(case) if prune is None else prune
+    scheme = default_scheme(case) if scheme is None else scheme
+    mesh, D, phi, solver = setup(case, order, h, mu, stab, fields, mesh, factor, prune, full)
     correct = D is not None and case not in ns.TRACTION
     V = VectorL2(mesh, order=order)
     V = V if D is None else restrict(V, D)            # the velocity space of the solves
-    un, an = GridFunction(V), GridFunction(V)        # a^0 = 0: not read (Euler first step)
+    un, an, uold = GridFunction(V), GridFunction(V), GridFunction(V)   # a^0 = 0: not read
     t.Set(0.0)
     un.Set(u, definedonelements=D)
     beta, iters, failed = CF((0, 0)), [], False
@@ -193,8 +245,11 @@ def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", mesh=None, log=No
         theta = 1.0 if scheme == "euler" or n == 0 else 0.5
         tau = tn - (times[n - 1] if n else 0.0)
         t.Set(tn)
-        c = rho / (theta * tau)
-        w = c * un + (rho * (1 - theta) / theta) * an
+        if scheme == "bdf2" and n > 0:        # (3 u^{n+1} - 4 u^n + u^{n-1})/(2 dt)
+            c, w = 3 * rho / (2 * tau), (rho / tau) * (2 * un - 0.5 * uold)
+        else:
+            c = rho / (theta * tau)
+            w = c * un + (rho * (1 - theta) / theta) * an
 
         def step(b):
             return solver(scaled(b, rho), (c, w))
@@ -211,18 +266,20 @@ def solve(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", mesh=None, log=No
         a_old = an.vec.CreateVector()        # not aliased: NGSolve evaluates a sum term by term
         a_old.data = an.vec
         an.vec.data = (1 / (theta * tau)) * (u1 - un.vec) - ((1 - theta) / theta) * a_old
+        uold.vec.data = un.vec                 # u^{n-1} of bdf2
         un.vec.data = u1
         beta = corrected_beta(mesh, us, m_h, D) if correct else us
     return mesh, D, (u, p, sigma, gamma), sol, p_h, m_h, S, us, iters, failed
 
 
-def row(case, order, h, dt, T, mu=1.0, rho=1.0, scheme="cn", stab=None, verbose=False,
-        start="elliptic"):
+def row(case, order, h, dt, T, mu=1.0, rho=1.0, scheme=None, stab=None, verbose=False,
+        start="elliptic", prune=None, full=None):
     """Errors at T (COLUMNS[ns.kind(case)]) and the extras of one run."""
     log = (lambda n, it, inc: print(f"    step {n:4d}  Picard {it:2d}  increment {inc:9.2e}",
                                     flush=True)) if verbose else None
     mesh, D, (u, p, sigma, gamma), sol, p_h, m_h, S, us, iters, failed = solve(
-        case, order, h, dt, T, mu, rho, scheme, log=log, stab=stab, start=start)
+        case, order, h, dt, T, mu, rho, scheme, log=log, stab=stab, start=start, prune=prune,
+        full=full)
     c = None
     if D is None:
         e = st.errors(mesh, sol, p_h, u, p, sigma, gamma)
@@ -242,21 +299,27 @@ def fmt(v, spec, width):
     return f"{'-':>{width}}" if v is None else f"{v:{width}{spec}}"
 
 
-def study(case, order, hs, dts, T, mu=1.0, rho=1.0, scheme="cn", stab=None, record=None,
-          start="elliptic"):
+def study(case, order, hs, dts, T, mu=1.0, rho=1.0, scheme=None, stab=None, record=None,
+          start="elliptic", prune=None, full=None):
     """EOC table over the pairs (h, dt): rates in h, or in dt when h is fixed."""
     stab = ns.default_stab(case) if stab is None else stab
+    full = default_full(case) if full is None else full
+    prune = default_prune(case) if prune is None else prune
+    scheme = default_scheme(case) if scheme is None else scheme
     var = "dt" if len(set(hs)) == 1 else "h"
     title = (f"{case}, k = {order}, mu = {mu}, rho = {rho}, {scheme}"
              f"{f' (Euler start {EPS:g} dt)' if scheme == 'cn' else ''}, u^0 {start}, T = {T}, {ns.STAB[stab]}, "
-             f"Picard tol {TOL:g}, cap {MAXIT}, rates in {var}")
+             f"Picard tol {TOL:g}, cap {MAXIT}, rates in {var}"
+             + (", D_h pruned" if prune else "")
+             + ("" if ns.kind(case) != "dirichlet" or full else ", P_k part of sigma transferred"))
     print(title, flush=True)
     print(f"  {'h':>7}  {'dt':>9}" + "".join(f"  {c:>9}  eoc " for c in COLUMNS[ns.kind(case)])
           + f"  {'m_h':>9}  {'c':>9}  {'S':>8}  {'max it':>6}  {'mean it':>7}  {'steps':>5}"
           f"  {'#D_h':>5}")
     prev = None
     for h, dt in zip(hs, dts):
-        mesh, sol, e, ex = row(case, order, h, dt, T, mu, rho, scheme, stab, start=start)
+        mesh, sol, e, ex = row(case, order, h, dt, T, mu, rho, scheme, stab, start=start, prune=prune,
+                               full=full)
         s = h if var == "h" else dt
         line = f"  {h:7.4f}  {dt:9.3e}"
         for i, ei in enumerate(e):
@@ -273,31 +336,51 @@ def study(case, order, hs, dts, T, mu=1.0, rho=1.0, scheme="cn", stab=None, reco
         prev = (s, e)
 
 
+# the default tables (one process per case, k and mu; dt = h^2, T = 0.2): h down to 0.05 on
+# the fitted meshes and Example 1 (gap O(h^2)), to 0.1 on the cases with gap O(h)
+DEFAULTS = {**{(k, c): (0.2, 0.1, 0.05) for k in (1, 2) for c in (*ns.FITTED, ns.UNFITTED[0])},
+            **{(k, c): (0.2, 0.1) for k in (1, 2) for c in ns.UNFITTED[1:]}}
+
+
 if __name__ == "__main__":
-    from study_io import Record, parse, parser, save
+    import argparse
+    from study_io import Record, parse, parser, run_defaults, save
 
     p = parser(__doc__, CASES)
-    p.add_argument("--dt", type=float, nargs="+", required=True,
-                   help="time steps, one per --h (or one for all)")
+    p.add_argument("--dt", type=float, nargs="+",
+                   help="time steps, one per --h (or one for all); default h^2")
     p.add_argument("--T", type=float, default=1.0, help="final time (default 1)")
-    p.add_argument("--scheme", choices=SCHEMES, default="cn", help="default cn (Euler start of EPS dt)")
+    p.add_argument("--scheme", choices=SCHEMES, default=None,
+                   help="default: bdf2 on the Dirichlet TPM cases with paths O(h), cn (Euler start of "
+                        "EPS dt) otherwise")
     p.add_argument("--mu", type=float, default=1.0, help="viscosity (default 1)")
     p.add_argument("--rho", type=float, default=1.0, help="density (default 1)")
     p.add_argument("--start", choices=("elliptic", "l2"), default="elliptic",
                    help="initial velocity: steady Navier-Stokes solve at t = 0 (default) or L2 projection (MATLAB)")
+    p.add_argument("--prune", action=argparse.BooleanOptionalAction, default=None,
+                   help="prune D_h (Dirichlet TPM cases; default: on paper example 4 only)")
+    p.add_argument("--transfer", choices=("full", "pk"), default=None,
+                   help="stress transferred on Gamma_h (Dirichlet TPM): whole, or P_k part "
+                        "(default: pk on the cases with paths O(h), full otherwise)")
     p.add_argument("--stab", choices=("global", "pointwise"), default=None,
                    help="default: navier_stokes_stress.default_stab(case)")
     a = parse(p)
     if a.k is None:
-        p.error("--k and --h are required")
-    dts = a.dt * len(a.h) if len(a.dt) == 1 else a.dt
+        run_defaults(__file__, [["--case", c, "--k", k, "--h", *hs, "--T", 0.2, "--mu", mu]
+                                for (k, c), hs in DEFAULTS.items() for mu in (1.0, 0.1)])
+        raise SystemExit
+    dts = [h * h for h in a.h] if a.dt is None else a.dt
+    dts = dts * len(a.h) if len(dts) == 1 else dts
     hs = a.h * len(dts) if len(a.h) == 1 else a.h
     if len(hs) != len(dts):
         p.error("--h and --dt: equal lengths, or one of them a single value")
     stab = ns.default_stab(a.case) if a.stab is None else a.stab
     record = Record(COLUMNS[ns.kind(a.case)])
-    study(a.case, a.k, hs, dts, a.T, a.mu, a.rho, a.scheme, stab, record, a.start)
+    full = default_full(a.case) if a.transfer is None else a.transfer == "full"
+    prune = default_prune(a.case) if a.prune is None else a.prune
+    scheme = default_scheme(a.case) if a.scheme is None else a.scheme
+    study(a.case, a.k, hs, dts, a.T, a.mu, a.rho, scheme, stab, record, a.start, prune, full)
     if a.out:
         save(a.out, record, dict(driver="navier_stokes_transient", case=a.case, k=a.k, mu=a.mu,
-                                 rho=a.rho, scheme=a.scheme, start=a.start, T=a.T, stab=stab, tol=TOL,
+                                 rho=a.rho, scheme=scheme, start=a.start, prune=prune, full=full, T=a.T, stab=stab, tol=TOL,
                                  maxit=MAXIT, beta="u**", solver="superlu", u="U cos t"))

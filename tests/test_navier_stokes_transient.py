@@ -97,3 +97,16 @@ def test_unfitted_cn_elliptic_start():
           for s, st in (("cn", "elliptic"), ("cn", "l2"), ("euler", "elliptic"))}
     assert es["cn", "elliptic"] < 1.2 * es["euler", "elliptic"], es
     assert es["cn", "l2"] > 3 * es["cn", "elliptic"], es
+
+
+def test_unfitted_pk_transfer_stable():
+    """Dirichlet TPM, paths O(h) (paper example 4, k = 1, mu = 1, h = 0.1), Euler with
+    dt = 0.0005, 8 steps: transferring the whole stress (bubbles included) gives the
+    semi-discrete operator an eigenvalue of positive real part (about 2e3 here: the error
+    grows about 16 times per step; 3.5 and Picard at its cap after 8 steps); its P_k part
+    does not (6.2e-4). On D_h unpruned (pruned, the default there, both are stable)."""
+    case, args = "paper example 4", (1, 0.1, 0.0005, 0.004)
+    pk = nt.row(case, *args, scheme="euler", full=False, prune=False)
+    full = nt.row(case, *args, scheme="euler", full=True, prune=False)
+    assert not pk[3]["failed"] and pk[2][3] < 2e-3, pk[2][3]          # |u - u_h|
+    assert full[3]["failed"] or full[2][3] > 0.1, full[2][3]
