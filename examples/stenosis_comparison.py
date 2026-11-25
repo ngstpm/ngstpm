@@ -18,7 +18,7 @@ unknowns, so only their histories are compared) and, at 4, 8, 12 ms, the flow an
 profiles of hemodynamics.py and the vertical displacement of the outer wall y = 0.6 (eta_y at
 order + 1 points per top face; Sigma is curved, the top line is common to both forms).
 
-    python stenosis_comparison.py --form vd|vv [--h 0.025 --k 2 --R 0.1 --dt 1e-4 --T 12e-3] --out F.mat
+    python stenosis_comparison.py --form vd|vv [--h 0.025 --k 2 --R 0.1 --dt 1e-4 --T 12e-3 --grid right|combo] --out F.mat
     python stenosis_comparison.py --compare vd.mat vv.mat
 """
 import time as clock
@@ -35,23 +35,44 @@ from ngstpm import unfitted_domain
 L, H = 6.0, 0.6
 
 
-def background_mesh(h, DF=None, DS=None):
+def matlab_rows(h, R):
+    """Row count of MATLAB's carve_grid (hemodynamics.m): the first of round(H/h) .. + 3 that puts
+    the flat wall y_Sigma(0) at least 0.15 of a row off every grid line (25 at h = 0.025)."""
+    y0, n = 0.5 - R * np.exp(-36.0), round(H / h)
+    return next((c for c in range(n, n + 4) if abs(y0 * c / H - round(y0 * c / H)) > 0.15), n)
+
+
+def background_mesh(h, DF=None, DS=None, grid="right", R=0.0):
     """Structured triangles of (0,L) x (0,H) with the boundaries of hemodynamics.py; a face on
     x = 0 (x = L) is inflow (outflow) if its element is in DF, wall_in (wall_out) if in DS, and
     carved otherwise (all carved when DF, DS are None). Element numbers: 2 (i ny + j) and
-    2 (i ny + j) + 1 for the two triangles of the cell (i, j)."""
+    2 (i ny + j) + 1 for the two triangles of the cell (i, j).
+    grid "right": ny = H/h rows, every diagonal "/" (the ngstpm grid of c670b3d).
+    grid "combo": MATLAB's carve_grid(grid_style = "combo"): ny = matlab_rows(h, R), diagonal "\\"
+    where Sigma descends (x <= 3, slope <= 0) and "/" where it climbs."""
     from netgen.csg import Pnt
     from netgen.meshing import Element1D, Element2D, FaceDescriptor, MeshPoint
     from netgen.meshing import Mesh as NGMesh
-    nx, ny = round(L / h), round(H / h)
+    nx = round(L / h)
+    ny = matlab_rows(h, R) if grid == "combo" else round(H / h)
     m = NGMesh(dim=2)
     p = [[m.Add(MeshPoint(Pnt(L * i / nx, H * j / ny, 0))) for j in range(ny + 1)] for i in range(nx + 1)]
     m.Add(FaceDescriptor(surfnr=1, domin=1, bc=1))
     m.SetMaterial(1, "background")
+    def descends(i):     # MATLAB's lattice_grid test: centred difference, slope <= 0 (so "\" where it rounds to 0)
+        wall = lambda x: 0.5 - R * np.exp(-((x - 3) / 0.5) ** 2)
+        xc = L * (i + 0.5) / nx
+        xl, xr = max(xc - 1e-4, 0.0), min(xc + 1e-4, L)
+        return (wall(xr) - wall(xl)) / (xr - xl) <= 0
+    back = [grid == "combo" and descends(i) for i in range(nx)]   # "\" in column i
     for i in range(nx):
         for j in range(ny):
-            m.Add(Element2D(1, [p[i][j], p[i + 1][j], p[i + 1][j + 1]]))
-            m.Add(Element2D(1, [p[i][j], p[i + 1][j + 1], p[i][j + 1]]))
+            if back[i]:          # first triangle holds the face x = x_i, the second x = x_{i+1}
+                m.Add(Element2D(1, [p[i][j], p[i + 1][j], p[i][j + 1]]))
+                m.Add(Element2D(1, [p[i + 1][j], p[i + 1][j + 1], p[i][j + 1]]))
+            else:                # first triangle holds x = x_{i+1}, the second x = x_i
+                m.Add(Element2D(1, [p[i][j], p[i + 1][j], p[i + 1][j + 1]]))
+                m.Add(Element2D(1, [p[i][j], p[i + 1][j + 1], p[i][j + 1]]))
     names = ("symmetry", "top", "inflow", "wall_in", "outflow", "wall_out", "carved")
     for k, name in enumerate(names):
         m.SetBCName(k, name)
@@ -62,9 +83,10 @@ def background_mesh(h, DF=None, DS=None):
     side = lambda el, fluid, wall: fluid if DF is not None and DF[el] else wall if DS is not None and DS[el] \
         else "carved"
     for j in range(ny):
-        m.Add(Element1D([p[0][j + 1], p[0][j]], index=index[side(2 * j + 1, "inflow", "wall_in")]))
+        m.Add(Element1D([p[0][j + 1], p[0][j]], index=index[side(2 * j + (0 if back[0] else 1),
+                                                                  "inflow", "wall_in")]))
         m.Add(Element1D([p[nx][j], p[nx][j + 1]],
-                        index=index[side(2 * ((nx - 1) * ny + j), "outflow", "wall_out")]))
+                        index=index[side(2 * ((nx - 1) * ny + j) + (1 if back[-1] else 0), "outflow", "wall_out")]))
     return Mesh(m)
 
 
@@ -72,16 +94,16 @@ def stenosis_phi(R):
     return lambda X, Y: 0.5 - R * exp(-4 * (X - 3) ** 2) - Y
 
 
-def carve(h, R):
+def carve(h, R, grid="right"):
     """mesh, phi, D_F, D_S of the carved stenosis."""
-    mesh, phi = background_mesh(h), stenosis_phi(R)
+    mesh, phi = background_mesh(h, grid=grid, R=R), stenosis_phi(R)
     DF = prune(mesh, phi, unfitted_domain(mesh, phi, side=2)[0])
     DS = prune(mesh, phi, unfitted_domain(mesh, phi, side=1)[0])
-    return background_mesh(h, DF, DS), phi, DF, DS          # the same elements, the sides labelled
+    return background_mesh(h, DF, DS, grid, R), phi, DF, DS          # the same elements, the sides labelled
 
 
-def setup(form, h, order, dt, R, mat=hd.MATERIAL):
-    mesh, phi, DF, DS = carve(h, R)
+def setup(form, h, order, dt, R, mat=hd.MATERIAL, grid="right"):
+    mesh, phi, DF, DS = carve(h, R, grid)
     bcF, bcS = hd.boundary_data(mesh)
     zero = CF((0, 0))
     g = lambda X, Y: CF((X - X, Y - Y))          # g = 0 (a constant 0 CF leaves the form without a test function)
@@ -118,11 +140,11 @@ def profiles(run):
                 wall=wall_profile(run))
 
 
-def march(form, h, order, dt, nsteps, R, log=print):
+def march(form, h, order, dt, nsteps, R, log=print, grid="right"):
     t0 = clock.time()
-    run = setup(form, h, order, dt, R)
+    run = setup(form, h, order, dt, R, grid=grid)
     nF, nS = run.DF.NumSet(), run.DS.NumSet()
-    log(f"{form}: h = {h}, k = {order}, R = {R}, dt = {dt}, {nsteps} steps; fluid {nF}, wall {nS}, "
+    log(f"{form}: h = {h}, k = {order}, R = {R}, grid {grid}, dt = {dt}, {nsteps} steps; fluid {nF}, wall {nS}, "
         f"discarded {run.mesh.ne - nF - nS} elements; ndof {run.fes.ndof}; setup {clock.time() - t0:.1f} s",
         flush=True)
     snapshots, norms, snaps = hd.snapshot_steps(dt), [], {}
@@ -198,6 +220,8 @@ if __name__ == "__main__":
     p.add_argument("--R", type=float, default=0.1)
     p.add_argument("--dt", type=float, default=1e-4)
     p.add_argument("--T", type=float, default=12e-3)
+    p.add_argument("--grid", choices=("right", "combo"), default="right",
+                   help="background grid: right (every diagonal /) or MATLAB's combo carve_grid")
     p.add_argument("--out", help="the .mat file")
     p.add_argument("--compare", nargs=2, metavar=("A.mat", "B.mat"))
     a = p.parse_args()
@@ -205,6 +229,6 @@ if __name__ == "__main__":
         compare(*a.compare)
     else:
         nsteps = round(a.T / a.dt)
-        run, norms, snaps, status = march(a.form, a.h, a.k, a.dt, nsteps, a.R)
+        run, norms, snaps, status = march(a.form, a.h, a.k, a.dt, nsteps, a.R, grid=a.grid)
         if a.out:
-            save(a.out, run, a.form, norms, snaps, status, dict(h=a.h, k=a.k, R=a.R, dt=a.dt, steps=nsteps))
+            save(a.out, run, a.form, norms, snaps, status, dict(h=a.h, k=a.k, R=a.R, dt=a.dt, steps=nsteps, grid=a.grid))
