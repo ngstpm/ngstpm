@@ -78,10 +78,13 @@ dt = 0.01, absent from the Stokes problem: it comes with the convection), and th
 h = 0.05 (k = 1: |s - s_h - cI| 2.1e+3 at mu = 1, 0.44 at mu = 0.1). Pruning D_h
 (elasticity_tpm.prune: infeasible faces, teeth) removes both. With the P_k part, bdf2 and
 pruning (the defaults there: default_full, default_scheme, default_prune), all of Examples
-2, 3 and paper example 4 run: k = 1, 2, mu = 1, 0.1 at h = 0.1, and k = 1 at h = 0.05;
+2, 3 and paper example 4 run: k = 1, 2, mu = 1, 0.1 at h = 0.1 and 0.05;
 |s - s_h - cI| h = 0.1 -> 0.05, k = 1: Example 2 0.079 -> 0.014 (mu = 1), 0.013 -> 0.0023
-(mu = 0.1); kidney 0.070 -> 0.014, 0.0083 -> 0.0016; paper example 4, k = 2, mu = 0.1:
-1.9e-5 -> 2.2e-6 (h = 0.2: 1.8e-4). Pruning does not hold at h = 0.2 on the kidney (paths
+(mu = 0.1); kidney 0.070 -> 0.014, 0.0083 -> 0.0016; k = 2: Example 2 8.9e-3 -> 5.1e-4
+(mu = 1), 1.3e-3 -> 8.1e-5 (mu = 0.1); kidney 1.9e-2 -> 5.9e-4, 1.9e-3 -> 5.9e-5 (D_h 116 ->
+642 elements: the rates near 5 are preasymptotic); paper example 4 6.7e-5 -> 5.7e-6 (mu = 1),
+1.9e-5 -> 2.2e-6 (mu = 0.1; h = 0.2: 1.8e-4). Picard: at most 3 iterations per step. k = 2
+at h = 0.05 from COSMOS job 4392846 (6ab3199; reports/navier-stokes-transient/cosmos-k2). Pruning does not hold at h = 0.2 on the kidney (paths
 miss Gamma: transfer_paths raises), so the default tables of these cases start at h = 0.1;
 pruned with the whole stress and cn, Example 2, k = 2, mu = 1 fails at h = 0.1 (the three
 remedies are needed together). Stability here rests on these runs, not on an analysis.
@@ -345,7 +348,7 @@ def study(case, order, hs, dts, T, mu=1.0, rho=1.0, scheme=None, stab=None, reco
 # the default tables (one process per case, k and mu; dt = h^2, T = 0.2): h = 0.2, 0.1, 0.05 on
 # the fitted meshes and Example 1 (gap O(h^2)); 0.2, 0.1 on the traction cases; 0.1, 0.05 on the
 # Dirichlet TPM cases with paths O(h) (pruned by default; the pruned kidney at h = 0.2 has paths
-# that miss Gamma). k = 2 at h = 0.05: a COSMOS job (about 20 min and 1.1 GB per level).
+# that miss Gamma). k = 2 at h = 0.05: a COSMOS job (both levels: up to 34 min and 0.77 GB).
 DEFAULTS = {**{(k, c): (0.2, 0.1, 0.05) for k in (1, 2) for c in (*ns.FITTED, ns.UNFITTED[0])},
             **{(k, c): (0.1, 0.05) if tpm_dirichlet_oh(c) else (0.2, 0.1)
                for k in (1, 2) for c in ns.UNFITTED[1:]}}
