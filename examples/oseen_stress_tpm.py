@@ -51,11 +51,12 @@ SINK = CF((-x, -y)) / (x * x + y * y)
 
 
 def solve(mesh, order, mu, f, g, phi, beta, D=None, dirichlet=".*", stab="global", gN=None,
-          factor=None):
+          factor=None, inertia=None, full=True):
     """Dirichlet (gN None; g(X, Y) on Gamma, D and dirichlet as in stokes_stress_tpm.solve)
     or traction on Gamma (gN(X, Y) the stress at xbar; g the velocity on the box, a CF).
     Returns (sigma_h, u_h, gamma_h, uhat_h, ustar_h), p_h, m_h (None with traction), D, S.
-    factor: as in stokes_stress.finish."""
+    factor: as in stokes_stress.finish; inertia = (c, w): as in oseen_stress.solve, on D_h
+    (w enters as f + w); full: as in stokes_stress_tpm.solve (Dirichlet only)."""
     assert gN is None or D is None, "traction: D is that of stokes_stress_tpm_neumann.solve"
     D = unfitted_domain(mesh, phi)[0] if D is None else D
     S = oseen.stabilization(mesh, beta, mu, order, D) if stab == "global" else None
@@ -69,9 +70,13 @@ def solve(mesh, order, mu, f, g, phi, beta, D=None, dirichlet=".*", stab="global
             for d in skip.space.GetDofNrs(el):
                 skip.vec[d] = 1
         oseen.convection(lhs, trial, test, beta, skip, D)
+        if inertia is not None:
+            lhs += inertia[0] * InnerProduct(trial[3], test[3]) * dx(definedonelements=D)
+    if inertia is not None:
+        f = f + inertia[1]
     if gN is None:
-        sol, p_h, m_h, D = tpm.solve(mesh, order, mu, f, g, phi, D, tau, dirichlet, convect=add,
-                                     factor=factor)
+        sol, p_h, m_h, D = tpm.solve(mesh, order, mu, f, g, phi, D, tau, dirichlet, full=full,
+                                     convect=add, factor=factor)
     else:
         sol, p_h, D = neumann.solve(mesh, order, mu, f, g, gN, phi, tau, convect=add,  # same D
                                     factor=factor)
