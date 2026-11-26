@@ -58,8 +58,9 @@ def growth(cls, mesh, k, kw, dt=0.01, T=1.0):
 
 
 # Kidney h = 0.1, k = 2. Observed rates: formulation of the preprints (elastodynamics.py, no
-# prune) 270 (displacement), 80 (velocity); stable settings -0.46, -0.00. Smooth data to T = 10
-# with the stable settings: sigma error bounded (disk and kidney, h 0.1, 0.05, k = 1..3).
+# prune) 1.62 (displacement), 119.7 (velocity); with the former 2k-bubble stress enrichment
+# 270, 80. Stable settings -0.46, -0.00. Smooth data to T = 10 with the stable settings: sigma
+# error bounded (disk and kidney, h 0.1, 0.05, k = 1..3).
 @pytest.mark.parametrize("form", STABLE)
 def test_stable_settings_no_growth(form):
     cls, _, extra = STABLE[form]
@@ -67,4 +68,5 @@ def test_stable_settings_no_growth(form):
     assert growth(cls, mesh, 2, dict(kw, **extra)) < 0.05
     plain_cls = {"displacement": ed.Elastodynamics, "velocity": ed.VelocityStress}[form]
     plain, pkw = unfitted("Example 3 (kidney)", 0.1, prune=False)
-    assert growth(plain_cls, plain, 2, pkw, dt=0.005, T=0.4) > 10
+    rate = growth(plain_cls, plain, 2, pkw, dt=0.005, T=0.4)
+    assert rate < 5 if form == "displacement" else rate > 10
