@@ -40,12 +40,13 @@ def test_patch_dirichlet(name, maxh, k):
 
 @pytest.mark.parametrize("k", [1, 2])
 def test_patch_traction(k):
-    """Raw errors (the traction fixes the pressure level); observed at most 3.8e-11."""
+    """Raw errors (the traction fixes the pressure level); observed at most 1.2e-10 (k = 2;
+    3.8e-11 with the former 2k-bubble enrichment)."""
     u, p = POLY[k]
     sigma, gamma, f = st.manufactured(u, p, 1.0)
     mesh = background_mesh(0.3)
     sol, p_h, D = neumann.solve(mesh, k, 1.0, f, u, at(sigma), neumann.PHI)
-    assert max(st.errors(mesh, sol, p_h, u, p, sigma, gamma, D)) < 1e-10
+    assert max(st.errors(mesh, sol, p_h, u, p, sigma, gamma, D)) < 1e-9
 
 
 def test_multiplier_decreases():

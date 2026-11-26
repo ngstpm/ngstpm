@@ -142,9 +142,10 @@ def test_fsi_translation_mode():
     """With traction on every outer face in x, the fluid x-translation is fixed only by the
     kinematic row, u_F,x = g_x + alpha etahat_x on Sigma: its error is alpha times the mean of
     eta_x - etahat_x over Sigma (|Sigma| = 1), which dominates the raw fluid velocity error at
-    alpha = 1000. Modulo its mean, the fluid velocity error is two orders smaller. Observed
-    k = 2, maxh 0.2: |u - u_h| 2.968e-3, mean over D_F of (u - u_h)_x -2.968e-3, alpha times the
-    mean over Sigma of (eta - etahat)_x -2.97e-3, |u - u_h - mean| 1.706e-5."""
+    alpha = 1000. Modulo its mean, the fluid velocity error is over an order smaller. Observed
+    k = 2, maxh 0.2: |u - u_h| 7.678e-4, mean over D_F of (u - u_h)_x -7.676e-4, alpha times the
+    mean over Sigma of (eta - etahat)_x -7.676e-4, |u - u_h - mean| 1.724e-5 (with the former
+    2k-bubble enrichment: 2.968e-3, -2.968e-3, -2.97e-3, 1.706e-5)."""
     k, alpha = 2, 1e3
     lamS, muS, exF, exS, g, gS, uF, eta = fi.problem(alpha=alpha)
     mesh, DF, DS = two_layer_mesh(0.2)
@@ -157,5 +158,5 @@ def test_fsi_translation_mode():
     raw, rest = (sqrt(Integrate(InnerProduct(v, v) * dV, mesh)) for v in (err, err - CF(tuple(mean))))
     sigma_mean = alpha * Integrate((eta[0] - solid[3][0]) * ds(definedon=mesh.Boundaries("interface"),
                                                                bonus_intorder=4), mesh)
-    assert rest < 1e-2 * raw
+    assert rest < 5e-2 * raw
     assert abs(mean[0] - sigma_mean) < 1e-2 * abs(sigma_mean)

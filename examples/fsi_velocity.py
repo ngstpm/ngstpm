@@ -46,14 +46,14 @@ class FSIVelocity:
     bcS = (table, g_D, g_N) with g_D the solid VELOCITY."""
 
     def __init__(self, mesh, order, phi, DF, DS, mat, fF, fS, g, gS, bcF, bcS, dt, tau=(1.0, 1.0), full=True,
-                 facets=(None, None)):
+                 facets=(None, None), kind=None):
         self.mesh, self.order, self.DF, self.DS, self.mat, self.dt = mesh, order, DF, DS, mat, dt
         self.bc = (bcF, bcS)
         muF, rhoF, lamS, muS, rhoS, b0 = (mat[k] for k in ("mu_F", "rho_F", "lam_S", "mu_S", "rho_S", "b0"))
         tauS = tau[1] * (rhoS * muS) ** 0.5
         cs = 2 / dt
 
-        pF, pS = (transfer_paths(mesh, phi, D, order=order + 4, facets=F) for D, F in zip((DF, DS), facets))
+        pF, pS = (transfer_paths(mesh, phi, D, kind=kind, order=order + 4, facets=F) for D, F in zip((DF, DS), facets))
         I = pair(pF, pS)                                              # side 1: fluid, side 2: solid
         dF, dS = (I.ds(side=i, bonus_intorder=max(6, 2 * order)) for i in (1, 2))
         spF, spS = spaces(mesh, order, NONE, DF, split=True), spaces(mesh, order, NONE, DS)
@@ -75,8 +75,8 @@ class FSIVelocity:
 
         # Gamma_h^F, traction:  sigma_F n_F + sigma_S n_S = g_nu  at xbar, n_S = nubar = -n_F
         xbar, nubar = pF.target, pF.target_normal
-        tF = -sPF.Extrapolate(xbar) * nubar - tau[0] * muF * (uF - uhatF)
-        tS = sPS.Extrapolate(xbar) * nubar - tauS * (v.Extrapolate() - vhat.Extrapolate())
+        tF = -(stress(sPF, wF1, wF2, at=xbar) if full else sPF.Extrapolate(xbar)) * nubar - tau[0] * muF * (uF - uhatF)
+        tS = (stress(sPS, wS1, wS2, at=xbar) if full else sPS.Extrapolate(xbar)) * nubar - tauS * (v.Extrapolate() - vhat.Extrapolate())
         lhs += (tF + tS) * test[5] * dF
         if gS is not None:
             load += gS(*xbar) * nubar * test[5] * dF

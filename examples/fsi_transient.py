@@ -90,10 +90,12 @@ class FSITransient:
     g(X, Y): kinematic data at xbar; gS(X, Y): the stress jump sigma_S - sigma_F at xbar
     (g_nu = gS(xbar) n_S), None = 0; bcF, bcS = (table, g_D, g_N) of component_bc.
     facets = (Gamma_h^F, Gamma_h^S): boundary Regions or facet BitArrays, for D_F, D_S not
-    sharing a face (a gap); default the faces between D_F and D_S (transfer_paths)."""
+    sharing a face (a gap); default the faces between D_F and D_S (transfer_paths); kind: the
+    path kind of transfer_paths ("vertical" = MATLAB's SmoothCurveHorizontal). With full, the
+    traction row extrapolates the whole stress sigma_P + curl(w), as the preprint and MATLAB."""
 
     def __init__(self, mesh, order, phi, DF, DS, mat, fF, fS, g, gS, bcF, bcS, dt, tau=(1.0, 1.0),
-                 full=True, solver="umfpack", facets=(None, None)):
+                 full=True, solver="umfpack", facets=(None, None), kind=None):
         self.mesh, self.order, self.DF, self.DS, self.mat, self.dt = mesh, order, DF, DS, mat, dt
         self.solver, self.bc = solver, (bcF, bcS)
         muF, rhoF, lamS, muS, rhoS, b0 = (mat[k] for k in ("mu_F", "rho_F", "lam_S", "mu_S", "rho_S", "b0"))
@@ -102,7 +104,7 @@ class FSITransient:
         self.c_a = dt ** 2 * ((0.5 - BETA) - BETA * (1 - GAMMA) / GAMMA)
         self.theta = Parameter(1.0)
 
-        pF, pS = (transfer_paths(mesh, phi, D, order=order + 4, facets=F) for D, F in zip((DF, DS), facets))
+        pF, pS = (transfer_paths(mesh, phi, D, kind=kind, order=order + 4, facets=F) for D, F in zip((DF, DS), facets))
         self.paths = (pF, pS)
         I = pair(pF, pS)                                              # side 1: fluid, side 2: solid
         dF, dS = (I.ds(side=i, bonus_intorder=max(6, 2 * order)) for i in (1, 2))
@@ -123,8 +125,8 @@ class FSITransient:
 
         # Gamma_h^F, traction:  sigma_F n_F + sigma_S n_S = g_nu  at xbar, n_S = nubar = -n_F
         xbar, nubar = pF.target, pF.target_normal
-        tF = -sPF.Extrapolate(xbar) * nubar - tau[0] * muF * (uF - uhatF)
-        tS = sPS.Extrapolate(xbar) * nubar - tau[1] * muS * (eta.Extrapolate() - etahat.Extrapolate())
+        tF = -(stress(sPF, wF1, wF2, at=xbar) if full else sPF.Extrapolate(xbar)) * nubar - tau[0] * muF * (uF - uhatF)
+        tS = (stress(sPS, wS1, wS2, at=xbar) if full else sPS.Extrapolate(xbar)) * nubar - tau[1] * muS * (eta.Extrapolate() - etahat.Extrapolate())
         lhs += (tF + tS) * test[5] * dF
         if gS is not None:
             load += gS(*xbar) * nubar * test[5] * dF
@@ -160,7 +162,7 @@ class FSITransient:
         n = fes.ndof
         self.F = np.zeros(n, dtype=bool)
         for c in range(8):
-            self.F[np.array(list(fes.Range(c)))] = True
+            self.F[np.array(list(fes.Range(c)), dtype=int)] = True
         self.S = ~self.F
         self.factorizations, self.thetas, self.time, self.steps = 0, [], 0.0, 0
         self._theta = None

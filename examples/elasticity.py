@@ -16,26 +16,26 @@ S(eta) = [[0, eta], [-eta, 0]]. The HDG method (Cockburn-Shi 2013) reads
     tau_S = tau mu (tau an O(1) constant, so that tau_S scales as the stress),
 
 where the first row is (u, div tau) - <uhat, tau n> integrated by parts. Spaces, k >= 1:
-u in P_k^2, gamma in P_k, uhat in P_k(e)^2, and sigma = sigma_P + curl(w) with
-sigma_P in P_k^{2x2} and w in B_K^2, where B_K is spanned by the H1 interior bubbles of
-order k+2 of top degree (b_K times degree-(k-1) hierarchical polynomials; the lower ones
-have curls in P_k^{2x2} and would make the local problems singular). The rows of
-curl(w) are (d_y w_i, -d_x w_i).
+u in P_k^2, gamma in P_k, uhat in P_k(e)^2, and sigma in P_k^{2x2} + B(K) with the PEERS
+enrichment of the preprint (numerical-method.tex, from Cockburn-Shi 2013) and MATLAB
+(PEERSBasis, curl_curl_A_dubiner_bubble_eval):
+
+    B(K) = curl(curl(A(K)) b_K) = { curl(b_K grad p) : p in P_k(K) },
+
+A(K) the skew P_k tensors, b_K the cubic bubble. Only the k + 1 modes of p of exact degree
+k are new (lower p give curls in P_k^{2x2} and would make the local problems singular), so
+sigma = sigma_P + curl(b_K grad p) with p in the top-degree span of L2(k). The rows of
+curl(v) are (d_y v_i, -d_x v_i); d_j(b p_i) = b_j p_i + b p_ij.
 """
 from math import log2
 
 from ngsolve import *
 
-from ngstpm import restrict
+from ngstpm import OwnElements, SideEval, restrict
 
 
 def skew(eta):
     return CF((0, eta, -eta, 0), dims=(2, 2))
-
-
-def curl(g1, g2):
-    """The matrix with rows (d_y w_i, -d_x w_i), from the gradients g_i of w_i."""
-    return CF((g1[1], -g1[0], g2[1], -g2[0]), dims=(2, 2))
 
 
 def compliance(sigma, lam, mu):
@@ -44,44 +44,74 @@ def compliance(sigma, lam, mu):
     return sigma / (2 * mu) - c2 * Trace(sigma) * Id(2)
 
 
-def stress(sP, w1, w2, at=None):
-    """sigma = sigma_P + curl(w); with at: extrapolated from the element of x to at."""
+def stress(sP, p, _=None, at=None):
+    """sigma = sigma_P + curl(b_K grad p); with at: extrapolated from the element of x (of
+    the side of p's space under an interface measure) to at. The third argument is the
+    empty component of spaces, kept so that the component layout is unchanged."""
+    mesh = p.space.mesh
+    b = _bubble(mesh)
+    gp, H = grad(p), p.Operator("hesse")
     if at is None:
-        return sP + curl(grad(w1), grad(w2))
-    return sP.Extrapolate(at) + curl(grad(w1).Extrapolate(at), grad(w2).Extrapolate(at))
+        b, gb = 1.0 * b, grad(b)
+    else:
+        D = OwnElements(p)
+        b, gb = SideEval(b, at, mesh, D), SideEval(grad(b), at, mesh, D)
+        sP, gp, H = sP.Extrapolate(at), gp.Extrapolate(at), H.Extrapolate(at)
+    d = lambda i, j: gb[j] * gp[i] + b * H[i, j]          # d_j (b p_i)
+    return sP + CF((d(0, 1), -d(0, 0), d(1, 1), -d(1, 0)), dims=(2, 2))
 
 
-def bubbles(mesh, order, D=None):
-    """H1(order + 2) on the elements of D (default: all) and the BitArray of its
-    top-degree interior bubbles, order dofs per element. The other dofs are marked
-    INTERFACE_DOF (not eliminated locally) and are kept at zero by free_dofs; all
-    dofs of an element stay regular, as Extrapolate requires."""
-    p = order + 2
-    B = H1(mesh, order=p)
+_bubbles = {}
+
+
+def _bubble(mesh):
+    """b_K on every element: the H1(3) GridFunction with its interior dofs = 1."""
+    if id(mesh) not in _bubbles:
+        V = H1(mesh, order=3)
+        b = GridFunction(V)
+        for d in range(V.ndof):
+            b.vec[d] = 1.0 if V.CouplingType(d) == COUPLING_TYPE.LOCAL_DOF else 0.0
+        _bubbles[id(mesh)] = (mesh, b)
+    return _bubbles[id(mesh)][1]
+
+
+def enrichment(mesh, order, D=None):
+    """L2(order) on the elements of D (default: all) and the BitArray of its dofs of exact
+    degree order (k + 1 per element; the local L2 basis is ordered (i, j), i + j <= k,
+    j fastest). The other dofs are marked INTERFACE_DOF (not eliminated locally) and are
+    kept at zero by free_dofs; all dofs of an element stay regular, as Extrapolate requires."""
+    Z = L2(mesh, order=order)
     if D is not None:
-        B = restrict(B, D)
-    idx = [sum(p - 2 - l for l in range(i)) + p - 3 - i for i in range(p - 2)]
-    top = BitArray(B.ndof)
+        Z = restrict(Z, D)
+    idx = [n for n, (i, j) in enumerate((i, j) for i in range(order + 1) for j in range(order + 1 - i))
+           if i + j == order]
+    top = BitArray(Z.ndof)
     top.Clear()
     for el in mesh.Elements(VOL):
         if D is None or D[el.nr]:
-            inner = [d for d in B.GetDofNrs(el) if B.CouplingType(d) == COUPLING_TYPE.LOCAL_DOF]
+            dofs = Z.GetDofNrs(el)
             for i in idx:
-                top.Set(inner[i])
-    for d in range(B.ndof):
+                top.Set(dofs[i])
+    for d in range(Z.ndof):
         if not top[d]:
-            B.SetCouplingType(d, COUPLING_TYPE.INTERFACE_DOF)
-    return B, top
+            Z.SetCouplingType(d, COUPLING_TYPE.INTERFACE_DOF)
+    return Z, top
 
 
 def spaces(mesh, order, dirichlet=".*", D=None, split=False):
-    """The product space (sigma_P, w1, w2, u, gamma, uhat) on the elements of D, and
-    the BitArray of the bubble dofs in use (see bubbles). With split, two P_0 spaces
-    are appended: xi (local) and rho (global), see forms."""
+    """The product space (sigma_P, p, -, u, gamma, uhat) on the elements of D, and the
+    BitArray of the p dofs in use (see enrichment). "-" is an empty space of order k + 2: it
+    keeps the component layout and the default quadrature of the former bubble space
+    H1(k + 2) (NGSolve takes the rule from the element orders, and curl(b_K grad p) has
+    degree k + 1; with order k it is under-integrated). With split, two P_0 spaces are
+    appended: xi (local) and rho (global), see forms."""
     on = (lambda V: V) if D is None else (lambda V: restrict(V, D))
-    B, top = bubbles(mesh, order, D)
-    fes = (on(MatrixValued(L2(mesh, order=order), dim=2)) * B * B * on(VectorL2(mesh, order=order))
-           * on(L2(mesh, order=order)) * on(FacetFESpace(mesh, order=order, dirichlet=dirichlet)) ** 2)
+    Z, top = enrichment(mesh, order, D)
+    none = BitArray(mesh.ne)
+    none.Clear()
+    fes = (on(MatrixValued(L2(mesh, order=order), dim=2)) * Z * restrict(L2(mesh, order=order + 2), none)
+           * on(VectorL2(mesh, order=order)) * on(L2(mesh, order=order))
+           * on(FacetFESpace(mesh, order=order, dirichlet=dirichlet)) ** 2)
     # (restrict(F ** 2) would lose the Dirichlet dofs of F)
     if split:
         rho = on(L2(mesh, order=0))
@@ -92,12 +122,11 @@ def spaces(mesh, order, dirichlet=".*", D=None, split=False):
 
 
 def free_dofs(fes, top, condense, free=None, first=0):
-    """Free dofs without the unused bubble dofs of the components first+1, first+2."""
+    """Free dofs without the unused p dofs of the component first+1."""
     free = fes.FreeDofs(coupling=condense) if free is None else free
-    for c in (first + 1, first + 2):
-        for i, d in enumerate(fes.Range(c)):
-            if not top[i]:
-                free.Clear(d)
+    for i, d in enumerate(fes.Range(first + 1)):
+        if not top[i]:
+            free.Clear(d)
     return free
 
 
@@ -117,7 +146,7 @@ def solve_linear_system(lhs, rhs, gfu, freedofs, inverse=None):
 
 def forms(fes, lam, mu, f, tau=1.0, D=None):
     """The HDG rows on the elements of D except the equation of uhat (condensed).
-    Returns lhs, rhs, the trial functions (sP, w1, w2, u, gamma, uhat), the test
+    Returns lhs, rhs, the trial functions (sP, p, -, u, gamma, uhat), the test
     function muh of uhat and sigma_hat n.
 
     If fes has the two P_0 spaces of spaces(split=True), the element mean of tr(sigma)
@@ -138,14 +167,14 @@ def forms(fes, lam, mu, f, tau=1.0, D=None):
 
 
 def hdg_rows(lhs, rhs, trial, test, lam, mu, f, tau=1.0, D=None):
-    """Add the rows of forms for one set of trial and test functions (sP, w1, w2, u,
+    """Add the rows of forms for one set of trial and test functions (sP, p, -, u,
     gamma, uhat[, xi, rho]) to lhs, rhs (several sets may share one form); returns
     sigma_hat n."""
     n = specialcf.normal(2)
     dV = dx(definedonelements=D)
     dS = dx(element_boundary=True, definedonelements=D)
-    (sP, w1, w2, u, gam, uhat), (tP, z1, z2, v, eta, muh) = trial[:6], test[:6]
-    sigma, tau_ = stress(sP, w1, w2), stress(tP, z1, z2)
+    (sP, p, _, u, gam, uhat), (tP, q, _, v, eta, muh) = trial[:6], test[:6]
+    sigma, tau_ = stress(sP, p), stress(tP, q)
     sigmahat_n = sigma * n - tau * mu * (u - uhat)
 
     lhs += (InnerProduct(compliance(sigma, lam, mu), tau_) - InnerProduct(grad(u), tau_)
@@ -167,9 +196,9 @@ def finish(lhs, rhs, fes, top, uhat_bc, mesh, order, lam, mu, D=None):
     if uhat_bc is not None:
         gfu.components[5].Set(*uhat_bc)
     solve_linear_system(lhs, rhs, gfu, free_dofs(fes, top, lhs.condense))
-    sP_h, w1_h, w2_h, u_h, gam_h, uhat_h = gfu.components[:6]
+    sP_h, p_h, _, u_h, gam_h, uhat_h = gfu.components[:6]
     u_h.gfu = gfu                                       # the whole solution, for study_io
-    sigma_h = stress(sP_h, w1_h, w2_h)
+    sigma_h = stress(sP_h, p_h)
     return sigma_h, u_h, gam_h, uhat_h, postprocess(mesh, order, lam, mu, sigma_h, u_h, gam_h, D)
 
 
