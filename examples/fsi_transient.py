@@ -162,7 +162,7 @@ class FSITransient:
         n = fes.ndof
         self.F = np.zeros(n, dtype=bool)
         for c in range(8):
-            self.F[np.array(list(fes.Range(c)))] = True
+            self.F[np.array(list(fes.Range(c)), dtype=int)] = True
         self.S = ~self.F
         self.factorizations, self.thetas, self.time, self.steps = 0, [], 0.0, 0
         self._theta = None
