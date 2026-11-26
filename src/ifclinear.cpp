@@ -31,7 +31,7 @@ namespace ngstpm
         });
         if (test.Size() == 0) throw Exception ("interface linear form: no test function in the integrand");
         for (size_t s = 0; s < I->NSegments(); s++)
-          pieces[I->Facet(side, I->Segment(s).piece[side].f).el].Append (s);
+          if (!I->Empty (side, s)) pieces[I->Facet(side, I->Segment(s).piece[side].f).el].Append (s);
       }
 
       VorB VB () const override { return VOL; }
@@ -100,6 +100,7 @@ namespace ngstpm
     double sum = 0;
     for (size_t s = 0; s < I.NSegments(); s++)
       {
+        if (I.Empty (side, s)) continue;
         HeapReset hr(lh);
         PieceRule r;
         MakePieceRule (I, side, s, 5 + bonus_intorder, r, lh);

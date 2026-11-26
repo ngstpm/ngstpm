@@ -2,18 +2,22 @@
 
 import numpy as np
 from netgen.libngpy._meshing import NgException
-from ngsolve import (BND, CF, BitArray, CoefficientFunction, Compress, FacetFESpace, GridFunction, Mesh,
+from ngsolve import (BND, CF, BitArray, CoefficientFunction, Compress, ElementId, FacetFESpace, GridFunction, Mesh,
                      Parameter, VOL, dx, x, y, z)
 from ngsolve.comp import Region
 
 
-def unfitted_domain(mesh, phi, side=1):
+def unfitted_domain(mesh, phi, side=1, max_normal_deviation=None):
     """Interior subdomain of Omega = {phi < 0} on a background mesh; with
     side=2 that of the other side, {phi > 0} (for any kind of geometry).
 
     phi: callable of the coordinate CFs, phi(x, y) -> CF, or an explicit
     geometry (ParametricCurve, BSplineCurve, PointCloud), which stands for
     its signed distance.
+    max_normal_deviation: None (default) keeps every element; an angle in
+    [0, 90] degrees prunes D_h by prune_infeasible_elements (85 makes the
+    carved spheres of tests/test_pairing_3d pair: it removes the faces of
+    Gamma_h that fold or lie along the paths).
     Returns (inner, gamma, ind): elements with phi < 0 at all vertices (D_h),
     facets with exactly one inner neighbour (Gamma_h), and a facet
     GridFunction equal to 1 on Gamma_h.
@@ -26,7 +30,79 @@ def unfitted_domain(mesh, phi, side=1):
     inner.Clear()
     for el in mesh.Elements(VOL):
         inner[el.nr] = all(sign * vals[v.nr] < 0 for v in el.vertices)
+    if max_normal_deviation is not None:
+        inner = prune_infeasible_elements(mesh, inner, phi, side, max_normal_deviation)
     return (inner, *boundary_facets(mesh, inner))
+
+
+def prune_infeasible_elements(mesh, inner, phi, side, max_deviation, band=2.0):
+    """Drop from the element set inner (D_h^side) every element owning a facet of
+    Gamma_h whose outward normal n_F deviates from the outward normal nu of
+    Omega_side, at the facet centroid c, by more than max_deviation degrees
+    (in [0, 90]), and repeat until no facet fails (removing an element exposes
+    new facets); after MATLAB SimplicialGrid/prune_infeasible_elements.
+
+    The test is signed: a facet facing back into D_h (n_F . nu < 0, a fold of
+    the transfer paths) always fails; one along the paths (n_F . nu = 0)
+    fails for max_deviation < 90. Only facets within band * (their diameter)
+    of Gamma are judged, so that the facets exposed far from Gamma are not.
+    In 3D this band does not bound the erosion: on Netgen tetrahedra around the
+    unit sphere 45 degrees empties D_h^1 (maxh 0.3, 0.4), and the pruning raises
+    if it empties a side. Returns a new BitArray.
+
+    Differences from MATLAB: nu is grad phi / |grad phi| at c (central
+    differences; the normal of the closest point for an explicit geometry),
+    not the normal at the projection of c on Gamma (the same for a signed
+    distance); the distance to Gamma is |phi| / |grad phi| (first order); the
+    side is given, not inferred; facets on the mesh boundary are not judged.
+    """
+    if not 0 <= max_deviation <= 90:
+        raise ValueError(f"max_deviation must be an angle in [0, 90] degrees, not {max_deviation!r}")
+    inner = BitArray(inner)
+    cosb = np.cos(np.radians(max_deviation))
+    V = np.array([v.point for v in mesh.vertices])[:, :mesh.dim]
+    if hasattr(phi, "closest"):
+        def normal_distance(C):
+            P, N = phi.closest(C)
+            return np.asarray(N, dtype=float), np.linalg.norm(C - P, axis=1)
+    else:
+        from .paths import _Ray
+        try:
+            ray = _Ray(mesh, phi, 1e-12, 1)
+        except ValueError as err:
+            raise ValueError("unfitted_domain(..., max_normal_deviation=...): the level set must depend on "
+                             "its arguments only, phi(X, Y) -> CF of X, Y (not a GridFunction)") from err
+
+        def normal_distance(C):
+            g = ray.grad(C)
+            return g / np.linalg.norm(g, axis=1)[:, None], ray.distance(C)
+    sign = 1 if side == 1 else -1
+    while True:
+        owner, nF, C, diam = [], [], [], []
+        for f in mesh.facets:
+            els = [e.nr for e in f.elements]
+            if len(els) != 2 or inner[els[0]] == inner[els[1]]:
+                continue
+            e = els[0] if inner[els[0]] else els[1]
+            P = V[[v.nr for v in f.vertices]]
+            n = np.array([P[1, 1] - P[0, 1], P[0, 0] - P[1, 0]]) if mesh.dim == 2 else np.cross(P[1] - P[0], P[2] - P[0])
+            c = P.mean(0)
+            n = n / np.linalg.norm(n)
+            ce = V[[v.nr for v in mesh[ElementId(VOL, e)].vertices]].mean(0)
+            owner.append(e); C.append(c); nF.append(n if n @ (c - ce) > 0 else -n)
+            diam.append(max(np.linalg.norm(P[i] - P[j]) for i in range(len(P)) for j in range(i)))
+        if not owner:
+            return inner
+        nu, dist = normal_distance(np.array(C))
+        cos = sign * np.sum(np.array(nF) * nu, axis=1)
+        bad = {e for e, cs, d, h in zip(owner, cos, dist, diam) if cs < cosb - 1e-12 and d <= band * h}
+        if not bad:
+            return inner
+        for e in bad:
+            inner[e] = False
+        if not any(inner):
+            raise RuntimeError(f"prune_infeasible_elements: pruning at {max_deviation} degrees removed every "
+                               f"element of D_h^{side}")
 
 
 def _vertex_values(mesh, phi):

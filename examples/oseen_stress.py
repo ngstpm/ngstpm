@@ -90,10 +90,12 @@ def convection(lhs, trial, test, beta, skip=None, D=None):
                                               definedonelements=D)
 
 
-def solve(mesh, order, mu, f, g, beta, gN=None, dirichlet=".*", stab="global", factor=None):
+def solve(mesh, order, mu, f, g, beta, gN=None, dirichlet=".*", stab="global", factor=None,
+          inertia=None):
     """Returns (sigma_h, u_h, gamma_h, uhat_h, ustar_h), p_h, m_h (None with a traction
     boundary) and S (the constant, or None for stab="pointwise"); factor: as in
-    stokes_stress.finish."""
+    stokes_stress.finish; inertia = (c, w): c (u, v) on the left and (w, v) on the right of
+    the momentum row (a time step, navier_stokes_transient.py)."""
     constrained = gN is None
     S = stabilization(mesh, beta, mu, order) if stab == "global" else None
     tau = S / mu if S is not None else 1 + Norm(beta * specialcf.normal(2)) / (2 * mu)
@@ -104,6 +106,10 @@ def solve(mesh, order, mu, f, g, beta, gN=None, dirichlet=".*", stab="global", f
         skip = GridFunction(FacetFESpace(mesh, order=0))
         skip.Set(1, definedon=mesh.Boundaries(".*"))
     convection(lhs, trial, test, beta, skip)
+    if inertia is not None:
+        c, w = inertia
+        lhs += c * InnerProduct(trial[3], test[3]) * dx
+        rhs += InnerProduct(w, test[3]) * dx(bonus_intorder=2)
     muh = test[5]
     lhs += sigmahat_n * muh * dx(element_boundary=True)
     if gN is not None:

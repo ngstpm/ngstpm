@@ -44,7 +44,8 @@ def solve(mesh1, mesh2, order, phi, kappa1, kappa2, f1, f2, gD, gN, g, tau=1.0, 
 
     lhs = I.BilinearForm(fes, condense=True)
     rhs = I.LinearForm(fes)
-    n = specialcf.normal(2)
+    n = specialcf.normal(mesh1.dim)
+    X = (x, y, z)[:mesh1.dim]
 
     # HDG on each side: plain NGSolve
     for q, u, uhat, r, v, mu, kappa, f, D, mesh in ((q1, u1, uhat1, r1, v1, mu1, kappa1, f1, D1, mesh1),
@@ -52,7 +53,7 @@ def solve(mesh1, mesh2, order, phi, kappa1, kappa2, f1, f2, gD, gN, g, tau=1.0, 
         dV = dx(definedonelements=D)
         dS = dx(element_boundary=True, definedonelements=D)
         qhat_n = q*n + tau*(u - uhat)
-        lhs += 1/kappa(x, y)*q*r*dV - u*div(r)*dV + uhat*(r*n)*dS
+        lhs += 1/kappa(*X)*q*r*dV - u*div(r)*dV + uhat*(r*n)*dS
         lhs += -q*grad(v)*dV + qhat_n*v*dS
         rhs += f*v*dV
         lhs += qhat_n*mu*interior_ds(mesh, D)                         # conservativity: interior faces
@@ -66,8 +67,8 @@ def solve(mesh1, mesh2, order, phi, kappa1, kappa2, f1, f2, gD, gN, g, tau=1.0, 
 
     # Gamma_h^2, trace:  u_1 - u_2 = gD  at xbar
     xbar = p2.target                                                  # side 2's paths end here
-    ub1 = uhat1.Transfer(p1, gradient=-q1/kappa1(x, y))
-    ub2 = uhat2.Transfer(p2, gradient=-q2/kappa2(x, y))
+    ub1 = uhat1.Transfer(p1, gradient=-q1/kappa1(*X))
+    ub2 = uhat2.Transfer(p2, gradient=-q2/kappa2(*X))
     lhs += (ub1 - ub2) * mu2 * dI[1]
     rhs += gD(*xbar) * mu2 * dI[1]
 

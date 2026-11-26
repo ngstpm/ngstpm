@@ -21,9 +21,8 @@ import sys
 
 import numpy as np
 import pytest
-from netgen.csg import unit_cube
 from netgen.geom2d import SplineGeometry
-from ngsolve import CF, BitArray, Mesh, VOL, BND, atan2, cos, sqrt, x, y, z
+from ngsolve import BitArray, Mesh, VOL, BND, atan2, cos, sqrt
 
 from ngstpm import ParametricCurve, pair, transfer_paths
 from ngstpm.interface import GAP_TOL, MERGE_TOL
@@ -192,17 +191,6 @@ def test_shared_elements_raise():
     p2.elements = D2 | D1
     with pytest.raises(Exception, match="share element"):
         pair(p1, p2)
-
-
-def test_3d_raises():
-    mesh = Mesh(unit_cube.GenerateMesh(maxh=0.5))
-    D = BitArray(mesh.ne)
-    D.Set()
-    F = BitArray(mesh.nfacet)
-    F.Set()
-    p = type("P", (), dict(mesh=mesh, elements=D, facets=F, target=CF((x, y, z)), sigma=CF((1, 0, 0))))
-    with pytest.raises(Exception, match="3D"):
-        pair(p, p)
 
 
 def test_point_cloud_rules():

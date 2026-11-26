@@ -145,14 +145,13 @@ Interface::Interface (IfcSide s1, IfcSide s2, double amerge, double agap) : merg
 
 void Interface::Build ()
 {
+  dim = sides[0].ma->GetDimension();
+  if ((dim != 2 && dim != 3) || sides[1].ma->GetDimension() != dim)
+    throw Exception ("pair: the meshes of both sides must be 2D or both 3D");
   for (int i = 0; i < 2; i++)
     {
       auto & S = sides[i];
-      if (S.ma->GetDimension() != 2)
-        throw Exception ("pair: 3D interfaces are not implemented yet (2D only)");
-      // 3D (D10): replace the arc-length parameter below by a chart of Gamma and clip
-      // the images of the two facet triangulations there; pieces become polygons.
-      if (S.target->Dimension() != 2 || S.sigma->Dimension() != 2)
+      if (S.target->Dimension() != dim || S.sigma->Dimension() != dim)
         throw Exception ("pair: target and sigma must be vectors of the mesh dimension");
       if (S.elements->Size() != S.ma->GetNE() || S.facets->Size() != S.ma->GetNFacets())
         throw Exception ("pair: elements/facets BitArrays do not match the mesh");
@@ -162,6 +161,7 @@ void Interface::Build ()
       if (sides[0].elements->Test(i) && sides[1].elements->Test(i))
         throw Exception ("pair: the two sides share element " + ToString(i)
                          + " of their common mesh (D_h^1 and D_h^2 must be disjoint)");
+  if (dim == 3) { Build3D(); return; }      // src/interface3d.cpp
 
   LocalHeap lh(10000000, "interface");
   // facets of Gamma_h^i with their owners and vertex numbers
@@ -188,6 +188,7 @@ void Interface::Build ()
           F.loc = S.ma->GetElFacets(ElementId(VOL, F.el)).Pos(fnr);
           S.ma->GetFacetPNums (fnr, pnums);
           for (int a = 0; a < 2; a++) F.p[a] = S.ma->GetPoint<3> (pnums[a]);
+          F.p[2] = 0.0;                                       // unused in 2D
           F.len = L2Norm (F.p[1] - F.p[0]);
           facets[i].Append (F);
           pv[i].Append ({pnums[0], pnums[1]});
@@ -472,6 +473,7 @@ void Interface::Build ()
 
 void Interface::Rule (int side, size_t s, int intorder, Array<IfcPoint> & pts, LocalHeap & lh) const
 {
+  if (dim == 3) { Rule3D (side, s, intorder, pts, lh); return; }
   const IfcSegment & seg = segments[s];
   const IfcSide & S = sides[side], & P = sides[1 - side];
   const IfcFacet & F = facets[side][seg.piece[side].f], & G = facets[1 - side][seg.piece[1 - side].f];
@@ -523,9 +525,13 @@ void Interface::Rule (int side, size_t s, int intorder, Array<IfcPoint> & pts, L
 void ExportInterface (py::module & m)
 {
   py::class_<Interface, shared_ptr<Interface>> (m, "Interface",
-      "Pairing of two sides' transfer paths with the common subdivision of Gamma (2D).\n"
+      "Pairing of two sides' transfer paths with the common subdivision of Gamma (2D and 3D).\n"
       "Built by ngstpm.pair(p1, p2). Segments: arcs of Gamma reached from exactly one facet\n"
-      "F of Gamma_h^1 and one facet F' of Gamma_h^2; their pieces of F and F'.")
+      "F of Gamma_h^1 and one facet F' of Gamma_h^2; their pieces of F and F'. In 3D a segment\n"
+      "is a pair of faces (F, F'), its pieces are polygons (triangulated) on F and on F'; it is\n"
+      "supported under the conditions in the docstring of ngstpm.pair (Gamma_h^i a surface, the\n"
+      "two sides on opposite sides of Gamma, the path maps injective without folds and resolved\n"
+      "by at most 16^2 subtriangles per face).")
     .def (py::init ([] (shared_ptr<MeshAccess> m1, shared_ptr<BitArray> D1, shared_ptr<BitArray> F1,
                         shared_ptr<CoefficientFunction> xb1, shared_ptr<CoefficientFunction> sg1,
                         shared_ptr<MeshAccess> m2, shared_ptr<BitArray> D2, shared_ptr<BitArray> F2,
@@ -543,6 +549,7 @@ void ExportInterface (py::module & m)
           {
             // per segment s and side i (axis 1: 0 = side 1, 1 = side 2):
             // facet, el, loc of the piece's facet; t[s,i,end]; x and xbar[s,i,end,:]
+            if (self->Dim() == 3) return InterfacePieces3D (*self);
             size_t n = self->NSegments();
             py::array_t<int> facet({n, size_t(2)}), el({n, size_t(2)}), loc({n, size_t(2)});
             py::array_t<double> t({n, size_t(2), size_t(2)}), X({n, size_t(2), size_t(2), size_t(2)}),
@@ -569,7 +576,11 @@ void ExportInterface (py::module & m)
             return d;
           },
           "dict of numpy arrays over segments s and sides i: facet, el, loc [s,i]; t [s,i,end]\n"
-          "(the piece: x = p0 + t (p1 - p0), p0, p1 the facet's vertices); x, xbar [s,i,end,:]")
+          "(the piece: x = p0 + t (p1 - p0), p0, p1 the facet's vertices); x, xbar [s,i,end,:].\n"
+          "3D: facet, el, loc, area, m [s,i] (area 0: empty piece; m: the face split into m^2\n"
+          "subtriangles) and the pieces' triangles k:\n"
+          "tri_seg, tri_side [k], tri_ref [k,vertex,:] (reference coordinates on the face:\n"
+          "x = p0 + xi (p1 - p0) + eta (p2 - p0)), tri_x [k,vertex,:]")
     .def ("_rule", [] (shared_ptr<Interface> self, int side, int intorder)
           {
             if (side != 1 && side != 2) throw Exception ("side must be 1 or 2");
@@ -582,15 +593,15 @@ void ExportInterface (py::module & m)
                 self->Rule (side - 1, s, intorder, pts, lh);
                 for (auto & p : pts)
                   {
-                    for (int j = 0; j < 2; j++)
+                    for (int j = 0; j < self->Dim(); j++)
                       { X.push_back (p.x(j)); XB.push_back (p.xbar(j)); XP.push_back (p.xp(j)); SG.push_back (p.sigmap(j)); }
                     W.push_back (p.weight);
                     EL.push_back (p.el); LOC.push_back (p.loc); PEL.push_back (p.pel); PLOC.push_back (p.ploc);
                     SEG.push_back (p.seg);
                   }
               }
-            size_t n = W.size();
-            auto vec = [&] (std::vector<double> & v) { return py::array_t<double> (std::vector<size_t>{n, 2}, v.data()); };
+            size_t n = W.size(), D = self->Dim();
+            auto vec = [&] (std::vector<double> & v) { return py::array_t<double> (std::vector<size_t>{n, D}, v.data()); };
             auto ints = [&] (std::vector<int> & v) { return py::array_t<int> (n, v.data()); };
             py::dict d;
             d["x"] = vec(X); d["weight"] = py::array_t<double> (n, W.data()); d["xbar"] = vec(XB);
