@@ -109,8 +109,8 @@ def setup(form, h, order, dt, R, mat=hd.MATERIAL, grid="right"):
     g = lambda X, Y: CF((X - X, Y - Y))          # g = 0 (a constant 0 CF leaves the form without a test function)
     if form == "vd":
         return FSITransient(mesh, order, phi, DF, DS, mat, zero, zero, g, None, bcF, bcS, dt,
-                            tau=(1.0, 1.0 / mat["mu_S"]))
-    return FSIVelocity(mesh, order, phi, DF, DS, mat, zero, zero, g, None, bcF, bcS, dt)
+                            tau=(1.0, 1.0 / mat["mu_S"]), kind="vertical")
+    return FSIVelocity(mesh, order, phi, DF, DS, mat, zero, zero, g, None, bcF, bcS, dt, kind="vertical")
 
 
 def displacement(run):
